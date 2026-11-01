@@ -52,22 +52,24 @@ def normalize_identity_columns(df):
 
 
 def read_csv_file(file):
-    """Read CSV while handling separators, encoding and column names."""
-
     df = pd.read_csv(
         file,
         sep=None,
         engine="python",
         encoding="utf-8-sig",
-        low_memory=False,
+        low_memory=False
     )
 
-    # Remove spaces and invisible characters from column names
     df.columns = (
         df.columns.astype(str)
         .str.replace("\ufeff", "", regex=False)
         .str.strip()
     )
+
+    for col in df.columns:
+        if col.lower().replace("_", "").replace(" ", "") == "transactionid":
+            df = df.rename(columns={col: "TransactionID"})
+            break
 
     return df
 
@@ -120,44 +122,44 @@ def merge_transaction_identity(transaction_df, identity_df):
 
 
 def load_local_dataset(dataset_type):
-    """
-    Load a dataset from the project's data/ directory.
-
-    Expected files:
-        data/train_transaction.csv
-        data/train_identity.csv
-        data/test_transaction.csv
-        data/test_identity.csv
-    """
-
     transaction_path = DATA_DIR / f"{dataset_type}_transaction.csv"
     identity_path = DATA_DIR / f"{dataset_type}_identity.csv"
 
     if not transaction_path.exists():
         raise FileNotFoundError(
-            f"File not found: {transaction_path}"
+            f"Transaction file not found: {transaction_path}"
         )
 
     if not identity_path.exists():
         raise FileNotFoundError(
-            f"File not found: {identity_path}"
+            f"Identity file not found: {identity_path}"
         )
 
-    transaction_df = pd.read_csv(
-        transaction_path,
-        low_memory=False,
-    )
+    transaction_df = read_csv_file(transaction_path)
+    identity_df = read_csv_file(identity_path)
 
-    identity_df = pd.read_csv(
-        identity_path,
-        low_memory=False,
-    )
+    identity_df = normalize_identity_columns(identity_df)
+
+    # Temporary diagnostic
+    st.write("Detected transaction columns:")
+    st.write(transaction_df.columns.tolist())
+
+    if "TransactionID" not in transaction_df.columns:
+        raise ValueError(
+            f"TransactionID missing. Found: "
+            f"{transaction_df.columns.tolist()[:20]}"
+        )
+
+    if "TransactionID" not in identity_df.columns:
+        raise ValueError(
+            f"TransactionID missing from identity file. Found: "
+            f"{identity_df.columns.tolist()[:20]}"
+        )
 
     return merge_transaction_identity(
         transaction_df,
-        identity_df,
+        identity_df
     )
-
 
 # ============================================================
 # ANALYSIS FUNCTIONS
@@ -575,13 +577,6 @@ dataset_source = st.sidebar.radio(
 
 df = None
 
-transaction_df = read_csv_file(transaction_path)
-
-st.write("Detected transaction columns:")
-st.write(transaction_df.columns.tolist())
-
-st.write("First 5 rows:")
-st.dataframe(transaction_df.head())
 # ============================================================
 # LOAD LOCAL TRAIN OR TEST DATASET
 # ============================================================
