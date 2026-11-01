@@ -123,9 +123,11 @@ def merge_transaction_identity(transaction_df, identity_df):
 
 
 def load_local_dataset(dataset_type):
+
     transaction_path = DATA_DIR / f"{dataset_type}_transaction.csv"
     identity_path = DATA_DIR / f"{dataset_type}_identity.csv"
 
+    # Check that files exist
     if not transaction_path.exists():
         raise FileNotFoundError(
             f"Transaction file not found: {transaction_path}"
@@ -136,31 +138,46 @@ def load_local_dataset(dataset_type):
             f"Identity file not found: {identity_path}"
         )
 
+    # Check whether files are Git LFS pointers
+    for path in [transaction_path, identity_path]:
+        with open(path, "rb") as f:
+            first_line = f.readline().decode(
+                "utf-8", errors="ignore"
+            )
+
+        if "git-lfs.github.com/spec/v1" in first_line:
+            raise ValueError(
+                f"{path.name} is a Git LFS pointer, "
+                "not the actual CSV dataset."
+            )
+
+    # Read CSV files
     transaction_df = read_csv_file(transaction_path)
     identity_df = read_csv_file(identity_path)
 
+    # Normalize identity columns
     identity_df = normalize_identity_columns(identity_df)
 
-    # Temporary diagnostic
-    st.write("Detected transaction columns:")
-    st.write(transaction_df.columns.tolist())
-
+    # Validate TransactionID
     if "TransactionID" not in transaction_df.columns:
         raise ValueError(
-            f"TransactionID missing. Found: "
-            f"{transaction_df.columns.tolist()[:20]}"
+            f"TransactionID missing from transaction data. "
+            f"Columns found: {transaction_df.columns.tolist()[:20]}"
         )
 
     if "TransactionID" not in identity_df.columns:
         raise ValueError(
-            f"TransactionID missing from identity file. Found: "
-            f"{identity_df.columns.tolist()[:20]}"
+            f"TransactionID missing from identity data. "
+            f"Columns found: {identity_df.columns.tolist()[:20]}"
         )
 
-    return merge_transaction_identity(
+    # Merge transaction and identity datasets
+    merged_df = merge_transaction_identity(
         transaction_df,
         identity_df
     )
+
+    return merged_df
 
 # ============================================================
 # ANALYSIS FUNCTIONS
