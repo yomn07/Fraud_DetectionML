@@ -3,965 +3,1204 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from core.artifacts import require_artifacts
-from core.ui import (
-    ALERT_COLOR,
-    OLD_COLOR,
-    PALETTE,
-    feature_group,
-    pct,
-    style,
-)
 
-# --------------------------------------------------
+# ============================================================
 # PAGE CONFIGURATION
-# --------------------------------------------------
+# ============================================================
 
-st.title("Exploratory data analysis")
-
-art = require_artifacts()
-
-DEFAULT_COLS = (
-    [
-        "isFraud",
-        "TransactionDT",
-        "TransactionAmt",
-        "ProductCD",
-        "card4",
-        "card6",
-        "P_emaildomain",
-        "R_emaildomain",
-        "DeviceType",
-        "addr1",
-        "dist1",
-    ]
-    + [f"M{i}" for i in range(1, 10)]
-    + [f"C{i}" for i in range(1, 15)]
-    + [f"D{i}" for i in range(1, 6)]
+st.set_page_config(
+    page_title="Data Explorer | Fraud Detection",
+    page_icon="📊",
+    layout="wide",
 )
 
-
-# --------------------------------------------------
-# EDA COMPUTATION
-# --------------------------------------------------
-
-@st.cache_data(
-    show_spinner="Computing EDA from your file...",
-    max_entries=2
+st.title("📊 Data Explorer")
+st.caption(
+    "Explore IEEE-CIS transaction and identity data, "
+    "including fraud patterns, missing values and transaction behavior."
 )
-def eda_from_source(src_key, _src, cols):
 
-    from core.eda import build_eda
+MAX_ROWS = 300_000
 
-    if hasattr(_src, "seek"):
-        _src.seek(0)
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJECT_DIR / "data"
 
-    df = pd.read_csv(
-        _src,
-        usecols=lambda c: c in cols
-    )
 
-    required = [
-        "isFraud",
-        "TransactionDT",
-        "TransactionAmt"
+# ============================================================
+# DATA LOADING FUNCTIONS
+# ============================================================
+
+def normalize_identity_columns(df):
+    """
+    Normalize identity column names:
+    id-01 -> id_01
+    id-02 -> id_02
+    """
+    df = df.copy()
+
+    df.columns = [
+        col.replace("id-", "id_") if isinstance(col, str) else col
+        for col in df.columns
     ]
 
-    missing = [c for c in required if c not in df.columns]
+    return df
 
-    if missing:
+
+def read_csv_file(file):
+    """Read a CSV file safely."""
+    return pd.read_csv(file, low_memory=False)
+
+
+def merge_transaction_identity(transaction_df, identity_df):
+    """
+    Merge transaction and identity datasets using TransactionID.
+
+    The transaction table is kept intact.
+    Identity columns are added using a left join.
+    """
+
+    transaction_df = transaction_df.copy()
+    identity_df = normalize_identity_columns(identity_df.copy())
+
+    if "TransactionID" not in transaction_df.columns:
         raise ValueError(
-            f"Missing required columns: {', '.join(missing)}"
+            "The transaction file must contain TransactionID."
         )
 
-    return build_eda(df)
+    if "TransactionID" not in identity_df.columns:
+        raise ValueError(
+            "The identity file must contain TransactionID."
+        )
 
+    if identity_df["TransactionID"].duplicated().any():
+        raise ValueError(
+            "Duplicate TransactionID values were found in the identity file."
+        )
 
-# --------------------------------------------------
-# DATA SOURCE SELECTION
-# --------------------------------------------------
+    duplicated_columns = (
+        set(transaction_df.columns)
+        & set(identity_df.columns)
+    ) - {"TransactionID"}
 
-source = st.radio(
-    "Data",
-    [
-        "Dataset used for the model (exported summaries)",
-        "Analyse my own file"
-    ],
-    horizontal=True
-)
+    if duplicated_columns:
+        raise ValueError(
+            "The two files contain duplicate columns other than "
+            f"TransactionID: {sorted(duplicated_columns)}"
+        )
 
-eda = art.eda
-
-
-# --------------------------------------------------
-# ANALYSE A CUSTOM DATASET
-# --------------------------------------------------
-
-if source.startswith("Analyse"):
-
-    st.markdown(
-        """
-        Load a **labelled transactions CSV** to perform
-        exploratory data analysis.
-
-        Required columns:
-        - `isFraud`
-        - `TransactionDT`
-        - `TransactionAmt`
-        """
+    merged = transaction_df.merge(
+        identity_df,
+        on="TransactionID",
+        how="left",
+        validate="one_to_one",
     )
 
-    # Extra columns
-    extra = st.text_input(
-        "Extra columns to include (comma-separated)",
-        ""
+    return merged
+
+
+def load_local_dataset(dataset_type):
+    """
+    Load a dataset from the project's data/ directory.
+
+    Expected files:
+        data/train_transaction.csv
+        data/train_identity.csv
+        data/test_transaction.csv
+        data/test_identity.csv
+    """
+
+    transaction_path = DATA_DIR / f"{dataset_type}_transaction.csv"
+    identity_path = DATA_DIR / f"{dataset_type}_identity.csv"
+
+    if not transaction_path.exists():
+        raise FileNotFoundError(
+            f"File not found: {transaction_path}"
+        )
+
+    if not identity_path.exists():
+        raise FileNotFoundError(
+            f"File not found: {identity_path}"
+        )
+
+    transaction_df = pd.read_csv(
+        transaction_path,
+        low_memory=False,
     )
 
-    cols = set(DEFAULT_COLS) | {
-        c.strip()
-        for c in extra.split(",")
-        if c.strip()
+    identity_df = pd.read_csv(
+        identity_path,
+        low_memory=False,
+    )
+
+    return merge_transaction_identity(
+        transaction_df,
+        identity_df,
+    )
+
+
+# ============================================================
+# ANALYSIS FUNCTIONS
+# ============================================================
+
+def prepare_dataframe(df):
+    """Prepare a copy of the dataset for analysis."""
+
+    df = df.copy()
+
+    if "TransactionAmt" in df.columns:
+        df["TransactionAmt"] = pd.to_numeric(
+            df["TransactionAmt"],
+            errors="coerce",
+        )
+
+    if "TransactionDT" in df.columns:
+        df["TransactionDT"] = pd.to_numeric(
+            df["TransactionDT"],
+            errors="coerce",
+        )
+
+    if "isFraud" in df.columns:
+        df["isFraud"] = pd.to_numeric(
+            df["isFraud"],
+            errors="coerce",
+        )
+
+    return df
+
+
+def calculate_summary(df):
+    """Calculate general dataset statistics."""
+
+    summary = {
+        "rows": len(df),
+        "columns": len(df.columns),
+        "duplicates": int(df.duplicated().sum()),
+        "missing_cells": int(df.isna().sum().sum()),
+        "missing_percentage": (
+            100 * df.isna().sum().sum()
+            / (df.shape[0] * df.shape[1])
+            if df.shape[0] * df.shape[1] > 0
+            else 0
+        ),
     }
 
-    # --------------------------------------------------
-    # FIND DATA FOLDER
-    # --------------------------------------------------
+    if "isFraud" in df.columns:
+        labels = pd.to_numeric(
+            df["isFraud"],
+            errors="coerce",
+        ).dropna()
 
-    project_root = Path(__file__).resolve().parents[1]
+        if len(labels) > 0:
+            summary["fraud_count"] = int((labels == 1).sum())
+            summary["normal_count"] = int((labels == 0).sum())
+            summary["fraud_rate"] = float((labels == 1).mean())
+        else:
+            summary["fraud_count"] = None
+            summary["normal_count"] = None
+            summary["fraud_rate"] = None
 
-    data_folder = project_root / "data"
+    return summary
 
-    # Create data folder if it does not exist
-    data_folder.mkdir(
-        parents=True,
-        exist_ok=True
-    )
 
-    # Find CSV files
-    csv_files = sorted(
-        data_folder.glob("*.csv")
-    )
+def numeric_columns(df):
+    """Return numeric columns, excluding identifiers and target."""
 
-    st.markdown("### Select your dataset")
+    excluded = {
+        "TransactionID",
+        "isFraud",
+    }
 
-    if csv_files:
+    return [
+        col
+        for col in df.select_dtypes(include=np.number).columns
+        if col not in excluded
+    ]
 
-        data_options = [
-            "Choose a CSV file..."
-        ] + [
-            file.name for file in csv_files
-        ]
 
-        selected_file = st.selectbox(
-            "CSV files found in data/",
-            data_options
+def categorical_columns(df):
+    """Return categorical columns."""
+
+    return [
+        col
+        for col in df.select_dtypes(
+            include=["object", "category", "bool"]
+        ).columns
+        if df[col].nunique(dropna=True) <= 100
+    ]
+
+
+def plot_fraud_distribution(df):
+    """Plot normal and fraudulent transactions."""
+
+    if "isFraud" not in df.columns:
+        st.info(
+            "This dataset has no isFraud column. "
+            "Fraud distribution cannot be calculated."
         )
+        return
+
+    labels = pd.to_numeric(
+        df["isFraud"],
+        errors="coerce",
+    ).dropna()
+
+    if labels.empty:
+        st.warning("No valid fraud labels were found.")
+        return
+
+    counts = labels.value_counts().sort_index()
+
+    chart_df = pd.DataFrame({
+        "Transaction type": [
+            "Normal" if x == 0 else "Fraud"
+            for x in counts.index
+        ],
+        "Count": counts.values,
+    })
+
+    fig = px.pie(
+        chart_df,
+        names="Transaction type",
+        values="Count",
+        title="Normal vs fraudulent transactions",
+        hole=0.45,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def plot_transaction_amount(df):
+    """Plot transaction amount distribution."""
+
+    if "TransactionAmt" not in df.columns:
+        st.info("TransactionAmt is not available.")
+        return
+
+    amounts = pd.to_numeric(
+        df["TransactionAmt"],
+        errors="coerce",
+    ).dropna()
+
+    if amounts.empty:
+        st.warning("No valid transaction amounts.")
+        return
+
+    fig = px.histogram(
+        x=amounts.clip(upper=amounts.quantile(0.99)),
+        nbins=60,
+        title="Transaction amount distribution (up to 99th percentile)",
+        labels={"x": "Transaction amount", "y": "Number of transactions"},
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def plot_amount_by_fraud(df):
+    """Compare transaction amounts for fraud and normal transactions."""
+
+    required = {"TransactionAmt", "isFraud"}
+
+    if not required.issubset(df.columns):
+        st.info("TransactionAmt or isFraud is missing.")
+        return
+
+    plot_df = df[["TransactionAmt", "isFraud"]].copy()
+
+    plot_df["TransactionAmt"] = pd.to_numeric(
+        plot_df["TransactionAmt"],
+        errors="coerce",
+    )
+
+    plot_df = plot_df.dropna()
+
+    if plot_df.empty:
+        st.warning("No valid values for this comparison.")
+        return
+
+    plot_df["Transaction type"] = plot_df["isFraud"].map({
+        0: "Normal",
+        1: "Fraud",
+    })
+
+    plot_df = plot_df[
+        plot_df["Transaction type"].notna()
+    ]
+
+    plot_df = plot_df[
+        plot_df["TransactionAmt"]
+        <= plot_df["TransactionAmt"].quantile(0.99)
+    ]
+
+    fig = px.box(
+        plot_df,
+        x="Transaction type",
+        y="TransactionAmt",
+        color="Transaction type",
+        title="Transaction amounts by class",
+        points=False,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def plot_time_distribution(df):
+    """Plot transactions over TransactionDT."""
+
+    if "TransactionDT" not in df.columns:
+        st.info("TransactionDT is not available.")
+        return
+
+    time_values = pd.to_numeric(
+        df["TransactionDT"],
+        errors="coerce",
+    ).dropna()
+
+    if time_values.empty:
+        st.warning("No valid TransactionDT values.")
+        return
+
+    time_df = pd.DataFrame({
+        "TransactionDT": time_values
+    })
+
+    # TransactionDT is expressed in seconds from an arbitrary reference.
+    time_df["Time group"] = (
+        time_df["TransactionDT"] // 86400
+    ).astype(int)
+
+    daily_counts = (
+        time_df.groupby("Time group")
+        .size()
+        .reset_index(name="Transactions")
+    )
+
+    fig = px.line(
+        daily_counts,
+        x="Time group",
+        y="Transactions",
+        markers=True,
+        title="Transactions over time",
+        labels={
+            "Time group": "Relative day",
+            "Transactions": "Number of transactions",
+        },
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def plot_categorical_distribution(df, column):
+    """Plot the most frequent categories."""
+
+    if column not in df.columns:
+        return
+
+    counts = (
+        df[column]
+        .fillna("Missing")
+        .astype(str)
+        .value_counts()
+        .head(20)
+        .reset_index()
+    )
+
+    counts.columns = [column, "Count"]
+
+    fig = px.bar(
+        counts,
+        x="Count",
+        y=column,
+        orientation="h",
+        title=f"Top values of {column}",
+    )
+
+    fig.update_layout(
+        yaxis={"categoryorder": "total ascending"}
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def plot_missing_values(df):
+    """Display columns with the highest missing-value rates."""
+
+    missing = (
+        df.isna()
+        .mean()
+        .mul(100)
+        .sort_values(ascending=False)
+    )
+
+    missing = missing[missing > 0].head(30)
+
+    if missing.empty:
+        st.success("No missing values were detected.")
+        return
+
+    missing_df = missing.reset_index()
+
+    missing_df.columns = [
+        "Column",
+        "Missing percentage",
+    ]
+
+    fig = px.bar(
+        missing_df,
+        x="Missing percentage",
+        y="Column",
+        orientation="h",
+        title="Columns with the most missing values",
+    )
+
+    fig.update_layout(
+        yaxis={"categoryorder": "total ascending"}
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def plot_correlations(df):
+    """Display correlations between numeric features."""
+
+    cols = numeric_columns(df)
+
+    if len(cols) < 2:
+        st.info("Not enough numeric columns for correlation analysis.")
+        return
+
+    max_features = min(len(cols), 25)
+
+    selected = st.multiselect(
+        "Select numeric features",
+        options=cols,
+        default=cols[:max_features],
+        key="correlation_features",
+    )
+
+    if len(selected) < 2:
+        st.warning("Select at least two features.")
+        return
+
+    corr = df[selected].corr(numeric_only=True)
+
+    fig = px.imshow(
+        corr,
+        text_auto=".2f",
+        color_continuous_scale="RdBu_r",
+        zmin=-1,
+        zmax=1,
+        title="Numeric feature correlation matrix",
+        aspect="auto",
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def show_feature_statistics(df):
+    """Display descriptive statistics."""
+
+    cols = numeric_columns(df)
+
+    if not cols:
+        st.info("No numeric columns found.")
+        return
+
+    stats = df[cols].describe().T
+
+    stats["missing"] = df[cols].isna().sum()
+    stats["missing_pct"] = (
+        df[cols].isna().mean() * 100
+    )
+
+    st.dataframe(
+        stats,
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# SIDEBAR: DATASET SELECTION
+# ============================================================
+
+st.sidebar.header("Dataset selection")
+
+available_local_files = (
+    (DATA_DIR / "train_transaction.csv").exists()
+    and (DATA_DIR / "train_identity.csv").exists()
+)
+
+available_test_files = (
+    (DATA_DIR / "test_transaction.csv").exists()
+    and (DATA_DIR / "test_identity.csv").exists()
+)
+
+dataset_options = [
+    "Upload my own files",
+]
+
+if available_local_files:
+    dataset_options.insert(0, "Local training dataset")
+
+if available_test_files:
+    dataset_options.insert(
+        1 if available_local_files else 0,
+        "Local test dataset",
+    )
+
+dataset_source = st.sidebar.radio(
+    "Choose data source",
+    dataset_options,
+)
+
+df = None
+
+
+# ============================================================
+# LOAD LOCAL TRAIN OR TEST DATASET
+# ============================================================
+
+if dataset_source == "Local training dataset":
+
+    with st.spinner("Loading and merging training files..."):
+
+        try:
+            df = load_local_dataset("train")
+
+            st.sidebar.success(
+                "Training dataset loaded successfully."
+            )
+
+        except Exception as error:
+            st.error(f"Could not load training data: {error}")
+            st.stop()
+
+
+elif dataset_source == "Local test dataset":
+
+    with st.spinner("Loading and merging test files..."):
+
+        try:
+            df = load_local_dataset("test")
+
+            st.sidebar.success(
+                "Test dataset loaded successfully."
+            )
+
+        except Exception as error:
+            st.error(f"Could not load test data: {error}")
+            st.stop()
+
+
+# ============================================================
+# UPLOAD CUSTOM DATASET
+# ============================================================
+
+elif dataset_source == "Upload my own files":
+
+    st.subheader("Upload IEEE-CIS CSV files")
+
+    st.write(
+        "Upload the transaction file and, optionally, "
+        "its corresponding identity file."
+    )
+
+    transaction_file = st.file_uploader(
+        "Transaction CSV",
+        type=["csv"],
+        key="transaction_upload",
+        help="Example: train_transaction.csv",
+    )
+
+    identity_file = st.file_uploader(
+        "Identity CSV (optional)",
+        type=["csv"],
+        key="identity_upload",
+        help="Example: train_identity.csv",
+    )
+
+    if transaction_file is not None:
+
+        try:
+            transaction_df = read_csv_file(transaction_file)
+
+            if identity_file is not None:
+
+                identity_df = read_csv_file(identity_file)
+
+                df = merge_transaction_identity(
+                    transaction_df,
+                    identity_df,
+                )
+
+                st.success(
+                    "Transaction and identity files merged successfully."
+                )
+
+            else:
+                df = transaction_df
+
+                st.info(
+                    "No identity file supplied. "
+                    "Only transaction features will be available."
+                )
+
+        except Exception as error:
+            st.error(f"Could not load your CSV files: {error}")
+            st.stop()
 
     else:
-
-        selected_file = "Choose a CSV file..."
-
-        st.info(
-            "No CSV files found in the data/ folder. "
-            "Add your CSV files there or upload one below."
-        )
-
-    # --------------------------------------------------
-    # OTHER INPUT METHODS
-    # --------------------------------------------------
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        up = st.file_uploader(
-            "Or upload a CSV file",
-            type=["csv"]
-        )
-
-    with col2:
-
-        path = st.text_input(
-            "Or enter a file path",
-            placeholder="/path/to/train_transaction.csv"
-        )
-
-    # --------------------------------------------------
-    # SELECT THE DATA SOURCE
-    # --------------------------------------------------
-
-    src = None
-    key = None
-
-    # Priority 1: uploaded file
-    if up is not None:
-
-        src = up
-
-        key = (
-            "upload",
-            up.name,
-            up.size
-        )
-
-    # Priority 2: custom path
-    elif path.strip():
-
-        custom_path = Path(path.strip())
-
-        if custom_path.is_file():
-
-            src = str(custom_path.resolve())
-
-            key = (
-                "path",
-                str(custom_path.resolve()),
-                custom_path.stat().st_size
-            )
-
-        else:
-
-            st.error(
-                "File not found on the machine running the app."
-            )
-
-    # Priority 3: CSV from data folder
-    elif selected_file != "Choose a CSV file...":
-
-        selected_path = data_folder / selected_file
-
-        if selected_path.is_file():
-
-            src = str(selected_path.resolve())
-
-            key = (
-                "data",
-                selected_file,
-                selected_path.stat().st_size
-            )
-
-    # --------------------------------------------------
-    # COMPUTE EDA
-    # --------------------------------------------------
-
-    if src is None:
-
-        st.info(
-            "Choose a CSV from data/, upload a file, "
-            "or enter a file path."
-        )
-
-        st.stop()
-
-    try:
-
-        eda = eda_from_source(
-            key + (tuple(sorted(cols)),),
-            src,
-            frozenset(cols)
-        )
-
-    except Exception as e:
-
-        st.error(
-            f"Could not analyse the file: {e}"
-        )
-
-        st.stop()
+        st.info("Upload a transaction CSV file to start exploring.")
 
 
-# --------------------------------------------------
-# EXPORTED MODEL DATASET SUMMARIES
-# --------------------------------------------------
+# ============================================================
+# DATA VALIDATION AND PREPARATION
+# ============================================================
 
-elif eda is None:
-
-    st.info(
-        "No EDA summaries were exported. "
-        "Re-run the notebook export (section 18), "
-        "or analyse your own file above."
-    )
-
+if df is None:
     st.stop()
 
+if len(df) == 0:
+    st.error("The selected dataset is empty.")
+    st.stop()
 
-# --------------------------------------------------
-# DATASET INFORMATION
-# --------------------------------------------------
+if len(df) > MAX_ROWS:
 
-st.caption(
-    f"Computed from {eda['n_rows']:,} labelled transactions "
-    f"and {eda['n_columns']} columns. "
-    "Only aggregates are kept, never individual rows."
-)
-
-
-# --------------------------------------------------
-# DASHBOARD TABS
-# --------------------------------------------------
-
-tabs = st.tabs(
-    [
-        "Overview",
-        "Time",
-        "Categories",
-        "Numeric features",
-        "Missing values",
-        "Correlations",
-        "Clients",
-    ]
-)
-
-
-# ==================================================
-# 1. OVERVIEW
-# ==================================================
-
-with tabs[0]:
-
-    a, b, c = st.columns(3)
-
-    a.metric(
-        "Transactions",
-        f"{eda['n_rows']:,}"
+    st.warning(
+        f"The dataset contains {len(df):,} rows. "
+        f"For interactive analysis, the first {MAX_ROWS:,} rows will be used."
     )
 
-    b.metric(
-        "Fraud cases",
-        f"{eda['n_fraud']:,}"
+    df = df.iloc[:MAX_ROWS].copy()
+
+df = prepare_dataframe(df)
+
+st.divider()
+
+
+# ============================================================
+# DATASET OVERVIEW
+# ============================================================
+
+st.header("Dataset overview")
+
+summary = calculate_summary(df)
+
+c1, c2, c3, c4 = st.columns(4)
+
+c1.metric(
+    "Transactions",
+    f"{summary['rows']:,}",
+)
+
+c2.metric(
+    "Features",
+    f"{summary['columns']:,}",
+)
+
+c3.metric(
+    "Duplicate rows",
+    f"{summary['duplicates']:,}",
+)
+
+c4.metric(
+    "Missing cells",
+    f"{summary['missing_percentage']:.2f}%",
+)
+
+if summary.get("fraud_rate") is not None:
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric(
+        "Fraudulent transactions",
+        f"{summary['fraud_count']:,}",
     )
 
-    c.metric(
+    c2.metric(
+        "Normal transactions",
+        f"{summary['normal_count']:,}",
+    )
+
+    c3.metric(
         "Fraud rate",
-        pct(eda["fraud_rate"], 2),
-        "heavily imbalanced",
-        delta_color="off"
+        f"{summary['fraud_rate'] * 100:.3f}%",
     )
 
-    # Transaction amount distribution
-    amt = eda["amount"]
+else:
 
-    edges = np.array(amt["edges"])
-
-    mid = np.sqrt(
-        edges[:-1] * edges[1:]
-    )
-
-    fig = go.Figure()
-
-    for cls, name, colr in (
-        ("0", "Legitimate", PALETTE[0]),
-        ("1", "Fraud", ALERT_COLOR),
-    ):
-
-        h = np.array(
-            amt["hist"][cls],
-            dtype=float
-        )
-
-        fig.add_scatter(
-            x=mid,
-            y=h / max(h.sum(), 1),
-            mode="lines",
-            fill="tozeroy",
-            name=name,
-            line_color=colr,
-            opacity=0.6
-        )
-
-    fig.update_layout(
-        title=(
-            "Transaction amount by class "
-            "(share of class, log x-axis)"
-        ),
-        xaxis_type="log",
-        xaxis_title="TransactionAmt",
-        yaxis_title="Share of class"
-    )
-
-    st.plotly_chart(
-        style(fig, 380),
-        width="stretch"
-    )
-
-    # Amount summary
-    st.dataframe(
-        pd.DataFrame(
-            amt["summary"]
-        ).rename(
-            columns={"class": "isFraud"}
-        ),
-        hide_index=True,
-        width="stretch"
-    )
-
-    # Amount percentiles
-    q = amt["quantiles"]
-
-    qdf = pd.DataFrame(
-        {
-            "percentile": [
-                "1%",
-                "5%",
-                "25%",
-                "50%",
-                "75%",
-                "95%",
-                "99%",
-            ],
-            "Legitimate": q["0"],
-            "Fraud": q["1"],
-        }
-    )
-
-    with st.expander("Amount percentiles by class"):
-
-        st.dataframe(
-            qdf,
-            hide_index=True,
-            width="stretch"
-        )
-
-    st.caption(
-        "Fraud and legitimate amounts overlap heavily: "
-        "amount alone is a weak signal, which is why "
-        "client behaviour matters."
+    st.info(
+        "This dataset has no usable isFraud labels. "
+        "Fraud rates and supervised fraud comparisons are unavailable. "
+        "You can still explore its features and missing values."
     )
 
 
-# ==================================================
-# 2. TIME ANALYSIS
-# ==================================================
+# ============================================================
+# RAW DATA PREVIEW
+# ============================================================
 
-with tabs[1]:
+with st.expander("Preview dataset", expanded=False):
 
-    d = pd.DataFrame(
-        eda["by_day"]
-    )
-
-    fig = go.Figure()
-
-    fig.add_bar(
-        x=d["day"],
-        y=d["transactions"],
-        name="Transactions",
-        marker_color=OLD_COLOR,
-        opacity=0.5,
-        yaxis="y"
-    )
-
-    fig.add_scatter(
-        x=d["day"],
-        y=d["fraud_rate"],
-        name="Fraud rate",
-        line_color=ALERT_COLOR,
-        yaxis="y2"
-    )
-
-    fig.update_layout(
-        title="Volume and fraud rate by day",
-        xaxis_title="Day since dataset start",
-        yaxis=dict(
-            title="Transactions"
-        ),
-        yaxis2=dict(
-            title="Fraud rate",
-            overlaying="y",
-            side="right",
-            tickformat=".1%"
-        )
-    )
-
-    st.plotly_chart(
-        style(fig, 380),
-        width="stretch"
-    )
-
-    # Hour analysis
-    h = pd.DataFrame(
-        eda["by_hour"]
-    )
-
-    fig = go.Figure()
-
-    fig.add_bar(
-        x=h["hour"],
-        y=h["transactions"],
-        name="Transactions",
-        marker_color=OLD_COLOR,
-        opacity=0.5,
-        yaxis="y"
-    )
-
-    fig.add_scatter(
-        x=h["hour"],
-        y=h["fraud_rate"],
-        name="Fraud rate",
-        line_color=ALERT_COLOR,
-        yaxis="y2"
-    )
-
-    fig.update_layout(
-        title="By hour of day",
-        xaxis_title=(
-            "Hour relative to dataset time origin"
-        ),
-        yaxis=dict(
-            title="Transactions"
-        ),
-        yaxis2=dict(
-            title="Fraud rate",
-            overlaying="y",
-            side="right",
-            tickformat=".1%"
-        )
-    )
-
-    st.plotly_chart(
-        style(fig, 340),
-        width="stretch"
-    )
-
-
-# ==================================================
-# 3. CATEGORICAL FEATURES
-# ==================================================
-
-with tabs[2]:
-
-    cats = eda["categorical"]
-
-    names = sorted(
-        cats,
-        key=lambda c: (feature_group(c), c)
-    )
-
-    default = (
-        names.index("ProductCD")
-        if "ProductCD" in names
-        else 0
-    )
-
-    col = st.selectbox(
-        "Column",
-        names,
-        index=default,
-        format_func=lambda c: (
-            f"{c} ({cats[c]['levels']} levels)"
-        )
-    )
-
-    t = pd.DataFrame(
-        cats[col]["table"]
-    )
-
-    fig = go.Figure()
-
-    fig.add_bar(
-        x=t["level"],
-        y=t["count"],
-        name="Transactions",
-        marker_color=OLD_COLOR,
-        opacity=0.5,
-        yaxis="y"
-    )
-
-    fig.add_scatter(
-        x=t["level"],
-        y=t["fraud_rate"],
-        name="Fraud rate",
-        mode="lines+markers",
-        line_color=ALERT_COLOR,
-        yaxis="y2"
-    )
-
-    fig.add_hline(
-        y=eda["fraud_rate"],
-        line_dash="dot",
-        line_color="#999",
-        yref="y2"
-    )
-
-    fig.update_layout(
-        title=f"{col}: volume and fraud rate by level",
-        yaxis=dict(
-            title="Transactions",
-            type="log"
-        ),
-        yaxis2=dict(
-            title="Fraud rate",
-            overlaying="y",
-            side="right",
-            tickformat=".1%"
-        ),
-        xaxis_tickangle=-30
-    )
-
-    st.plotly_chart(
-        style(fig, 420),
-        width="stretch"
-    )
+    st.write("First rows")
 
     st.dataframe(
-        t,
+        df.head(100),
+        use_container_width=True,
+    )
+
+    st.write("Dataset information")
+
+    info_df = pd.DataFrame({
+        "Column": df.columns,
+        "Data type": [
+            str(df[col].dtype)
+            for col in df.columns
+        ],
+        "Missing values": [
+            int(df[col].isna().sum())
+            for col in df.columns
+        ],
+        "Missing percentage": [
+            float(df[col].isna().mean() * 100)
+            for col in df.columns
+        ],
+        "Unique values": [
+            int(df[col].nunique(dropna=True))
+            for col in df.columns
+        ],
+    })
+
+    st.dataframe(
+        info_df,
+        use_container_width=True,
         hide_index=True,
-        width="stretch",
-        column_config={
-            "fraud_rate": st.column_config.NumberColumn(
-                format="percent"
-            )
-        }
     )
 
-    st.caption(
-        "Dotted line = overall fraud rate. "
-        "Small levels have noisy rates: check the "
-        "transaction count before reading a spike."
+    st.download_button(
+        "Download merged dataset",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="merged_ieee_dataset.csv",
+        mime="text/csv",
     )
 
 
-# ==================================================
-# 4. NUMERIC FEATURES
-# ==================================================
+# ============================================================
+# INTERACTIVE EXPLORATION TABS
+# ============================================================
 
-with tabs[3]:
-
-    nums = eda["numeric"]
-
-    names = sorted(
-        nums,
-        key=lambda c: (feature_group(c), c)
-    )
-
-    default = (
-        names.index("TransactionAmt")
-        if "TransactionAmt" in names
-        else 0
-    )
-
-    col = st.selectbox(
-        "Feature",
-        names,
-        index=default,
-        key="numcol"
-    )
-
-    info = nums[col]
-
-    bins = pd.DataFrame(
-        info["bins"]
-    )
-
-    bins["label"] = [
-        f"{l:.3g} to {r:.3g}"
-        for l, r in zip(
-            bins["left"],
-            bins["right"]
-        )
-    ]
-
-    fig = go.Figure()
-
-    fig.add_bar(
-        x=bins["label"],
-        y=bins["fraud_rate"],
-        marker_color=PALETTE[0],
-        name="Fraud rate"
-    )
-
-    fig.add_hline(
-        y=eda["fraud_rate"],
-        line_dash="dot",
-        line_color="#999",
-        annotation_text="overall"
-    )
-
-    fig.update_layout(
-        title=(
-            f"{col}: fraud rate by quantile bin "
-            "(about equal numbers of transactions per bin)"
-        ),
-        yaxis_tickformat=".1%",
-        xaxis_tickangle=-40,
-        yaxis_title="Fraud rate"
-    )
-
-    st.plotly_chart(
-        style(fig, 420, legend=False),
-        width="stretch"
-    )
-
-    m1, m2, m3, m4 = st.columns(4)
-
-    m1.metric(
-        "Missing",
-        pct(info["missing_share"])
-    )
-
-    m2.metric(
-        "Median (legitimate)",
-        f"{info['median_legit']:.4g}"
-    )
-
-    m3.metric(
-        "Median (fraud)",
-        (
-            "n/a"
-            if info["median_fraud"] is None
-            else f"{info['median_fraud']:.4g}"
-        )
-    )
-
-    m4.metric(
-        "Mean fraud / legit",
-        (
-            "n/a"
-            if not info["mean_fraud"]
-            or not info["mean_legit"]
-            else f"{info['mean_fraud'] / info['mean_legit']:.2f}x"
-        )
-    )
+(
+    tab_overview,
+    tab_time,
+    tab_categories,
+    tab_numeric,
+    tab_missing,
+    tab_correlations,
+    tab_identity,
+) = st.tabs([
+    "Overview",
+    "Time analysis",
+    "Categories",
+    "Numeric features",
+    "Missing values",
+    "Correlations",
+    "Identity features",
+])
 
 
-# ==================================================
-# 5. MISSING VALUES
-# ==================================================
+# ============================================================
+# TAB 1: OVERVIEW
+# ============================================================
 
-with tabs[4]:
+with tab_overview:
 
-    m = pd.DataFrame(
-        eda["missing"]
-    )
+    st.subheader("Fraud distribution")
 
-    top = st.slider(
-        "Columns to show",
-        10,
-        80,
-        30
-    )
+    plot_fraud_distribution(df)
 
-    mm = m.head(top).iloc[::-1]
+    st.subheader("Transaction amounts")
 
-    fig = go.Figure(
-        go.Bar(
-            x=mm["missing_share"],
-            y=mm["feature"],
-            orientation="h",
-            marker_color=PALETTE[0]
-        )
-    )
+    plot_transaction_amount(df)
 
-    fig.update_layout(
-        title="Share of missing values",
-        xaxis_tickformat=".0%"
-    )
+    st.subheader("Amount comparison by fraud class")
 
-    st.plotly_chart(
-        style(fig, 90 + 18 * top, legend=False),
-        width="stretch"
-    )
+    plot_amount_by_fraud(df)
 
-    both = m.dropna(
-        subset=[
-            "fraud_rate_if_missing",
-            "fraud_rate_if_present"
-        ]
-    ).copy()
 
-    if len(both):
+# ============================================================
+# TAB 2: TIME ANALYSIS
+# ============================================================
 
-        both["ratio"] = (
-            both["fraud_rate_if_missing"]
-            / both["fraud_rate_if_present"].replace(
-                0,
-                np.nan
-            )
-        )
+with tab_time:
 
-        st.markdown(
-            "**Is being missing itself informative?** "
-            "Columns where the fraud rate differs most "
-            "between missing and present:"
-        )
+    st.subheader("Transaction activity over time")
 
-        both = both.reindex(
-            both["ratio"]
-            .sub(1)
-            .abs()
-            .sort_values(ascending=False)
-            .index
-        ).head(15)
+    plot_time_distribution(df)
+
+    if "TransactionDT" in df.columns:
+
+        st.subheader("Transaction time statistics")
+
+        time_stats = pd.to_numeric(
+            df["TransactionDT"],
+            errors="coerce",
+        ).describe()
 
         st.dataframe(
-            both[
-                [
-                    "feature",
-                    "missing_share",
-                    "fraud_rate_if_missing",
-                    "fraud_rate_if_present",
-                    "ratio",
-                ]
-            ],
-            hide_index=True,
-            width="stretch",
-            column_config={
-                "missing_share": st.column_config.NumberColumn(
-                    format="percent"
-                ),
-                "fraud_rate_if_missing": st.column_config.NumberColumn(
-                    format="percent"
-                ),
-                "fraud_rate_if_present": st.column_config.NumberColumn(
-                    format="percent"
-                ),
-                "ratio": st.column_config.NumberColumn(
-                    "missing / present",
-                    format="%.2fx"
-                ),
-            }
+            time_stats.to_frame("TransactionDT"),
+            use_container_width=True,
         )
 
+    if {"TransactionDT", "isFraud"}.issubset(df.columns):
 
-# ==================================================
-# 6. CORRELATIONS
-# ==================================================
+        st.subheader("Fraud distribution over time")
 
-with tabs[5]:
+        time_df = df[
+            ["TransactionDT", "isFraud"]
+        ].copy()
 
-    tc = pd.DataFrame(
-        eda.get("target_correlation", [])
-    )
-
-    if len(tc):
-
-        t = tc.head(25).iloc[::-1]
-
-        fig = go.Figure(
-            go.Bar(
-                x=t["corr_with_fraud"],
-                y=t["feature"],
-                orientation="h",
-                marker_color=[
-                    ALERT_COLOR if v > 0 else PALETTE[0]
-                    for v in t["corr_with_fraud"]
-                ]
-            )
+        time_df["TransactionDT"] = pd.to_numeric(
+            time_df["TransactionDT"],
+            errors="coerce",
         )
 
-        fig.update_layout(
-            title="Linear correlation with isFraud (top 25)"
+        time_df = time_df.dropna()
+
+        time_df["Relative day"] = (
+            time_df["TransactionDT"] // 86400
+        ).astype(int)
+
+        daily_fraud = (
+            time_df.groupby("Relative day")["isFraud"]
+            .mean()
+            .reset_index(name="Fraud rate")
         )
+
+        fig = px.line(
+            daily_fraud,
+            x="Relative day",
+            y="Fraud rate",
+            markers=True,
+            title="Fraud rate over time",
+        )
+
+        fig.update_yaxes(tickformat=".1%")
 
         st.plotly_chart(
-            style(fig, 640, legend=False),
-            width="stretch"
+            fig,
+            use_container_width=True,
         )
 
-    cm = eda.get("correlation_matrix")
 
-    if cm:
+# ============================================================
+# TAB 3: CATEGORICAL FEATURES
+# ============================================================
 
-        fig = go.Figure(
-            go.Heatmap(
-                z=cm["values"],
-                x=cm["features"],
-                y=cm["features"],
-                zmin=-1,
-                zmax=1,
-                colorscale="RdBu_r"
-            )
-        )
+with tab_categories:
 
-        fig.update_layout(
-            title=(
-                "Correlation among the 25 features "
-                "most correlated with fraud"
-            ),
-            yaxis=dict(
-                autorange="reversed"
-            )
-        )
+    st.subheader("Categorical feature exploration")
 
-        st.plotly_chart(
-            style(fig, 620, legend=False),
-            width="stretch"
-        )
+    cat_cols = categorical_columns(df)
 
-    st.caption(
-        "Linear correlation with fraud is small for almost "
-        "every column: signal comes from interactions, "
-        "which is why tree models win here."
-    )
+    if not cat_cols:
 
-
-# ==================================================
-# 7. CLIENT ANALYSIS
-# ==================================================
-
-with tabs[6]:
-
-    cl = pd.DataFrame(
-        eda.get("client", [])
-    )
-
-    if not len(cl):
-
-        st.info(
-            "No client-structure summaries were exported."
-        )
+        st.info("No suitable categorical features were found.")
 
     else:
 
-        st.markdown(
-            "Why the client-ID features were added: "
-            "fraud rate by how a transaction relates "
-            "to its pseudo-client."
+        selected_category = st.selectbox(
+            "Choose a categorical feature",
+            cat_cols,
         )
 
-        for feat in cl["feature"].unique():
+        plot_categorical_distribution(
+            df,
+            selected_category,
+        )
 
-            d = cl[
-                cl["feature"] == feat
+        if (
+            "isFraud" in df.columns
+            and selected_category in df.columns
+        ):
+
+            st.subheader(
+                f"Fraud rate by {selected_category}"
+            )
+
+            category_df = df[
+                [selected_category, "isFraud"]
+            ].copy()
+
+            category_df[selected_category] = (
+                category_df[selected_category]
+                .fillna("Missing")
+                .astype(str)
+            )
+
+            fraud_by_category = (
+                category_df.groupby(selected_category)["isFraud"]
+                .agg(["mean", "count"])
+                .reset_index()
+            )
+
+            fraud_by_category.columns = [
+                selected_category,
+                "Fraud rate",
+                "Transactions",
             ]
 
-            fig = go.Figure()
+            fraud_by_category = fraud_by_category.sort_values(
+                "Transactions",
+                ascending=False,
+            ).head(20)
 
-            fig.add_bar(
-                x=d["bucket"],
-                y=d["transactions"],
-                marker_color=OLD_COLOR,
-                opacity=0.5,
-                name="Transactions",
-                yaxis="y"
+            fig = px.bar(
+                fraud_by_category,
+                x=selected_category,
+                y="Fraud rate",
+                hover_data=["Transactions"],
+                title="Fraud rate by category",
             )
 
-            fig.add_scatter(
-                x=d["bucket"],
-                y=d["fraud_rate"],
-                mode="lines+markers",
-                line_color=ALERT_COLOR,
-                name="Fraud rate",
-                yaxis="y2"
+            fig.update_yaxes(tickformat=".1%")
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
             )
 
-            fig.update_layout(
-                title=feat,
-                yaxis=dict(
-                    title="Transactions"
+
+# ============================================================
+# TAB 4: NUMERIC FEATURES
+# ============================================================
+
+with tab_numeric:
+
+    st.subheader("Numeric feature statistics")
+
+    show_feature_statistics(df)
+
+    cols = numeric_columns(df)
+
+    if cols:
+
+        selected_numeric = st.selectbox(
+            "Select a numeric feature",
+            cols,
+        )
+
+        values = pd.to_numeric(
+            df[selected_numeric],
+            errors="coerce",
+        ).dropna()
+
+        if not values.empty:
+
+            fig = px.histogram(
+                x=values.clip(
+                    upper=values.quantile(0.99)
                 ),
-                yaxis2=dict(
-                    title="Fraud rate",
-                    overlaying="y",
-                    side="right",
-                    tickformat=".1%"
-                )
+                nbins=50,
+                title=f"Distribution of {selected_numeric}",
+                labels={
+                    "x": selected_numeric,
+                    "y": "Number of transactions",
+                },
             )
 
             st.plotly_chart(
-                style(fig, 320),
-                width="stretch",
-                key=f"client_{feat}"
+                fig,
+                use_container_width=True,
             )
+
+            st.write(
+                values.describe().to_frame(
+                    selected_numeric
+                )
+            )
+
+
+# ============================================================
+# TAB 5: MISSING VALUES
+# ============================================================
+
+with tab_missing:
+
+    st.subheader("Missing value analysis")
+
+    plot_missing_values(df)
+
+    missing_table = pd.DataFrame({
+        "Column": df.columns,
+        "Missing count": [
+            int(df[col].isna().sum())
+            for col in df.columns
+        ],
+        "Missing percentage": [
+            float(df[col].isna().mean() * 100)
+            for col in df.columns
+        ],
+    })
+
+    missing_table = missing_table.sort_values(
+        "Missing percentage",
+        ascending=False,
+    )
+
+    st.dataframe(
+        missing_table,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.download_button(
+        "Download missing values report",
+        data=missing_table.to_csv(index=False).encode("utf-8"),
+        file_name="missing_values_report.csv",
+        mime="text/csv",
+    )
+
+
+# ============================================================
+# TAB 6: CORRELATIONS
+# ============================================================
+
+with tab_correlations:
+
+    st.subheader("Feature correlation analysis")
+
+    plot_correlations(df)
+
+
+# ============================================================
+# TAB 7: IDENTITY FEATURES
+# ============================================================
+
+with tab_identity:
+
+    st.subheader("Identity information")
+
+    identity_features = [
+        col for col in df.columns
+        if (
+            col.startswith("id_")
+            or col in [
+                "DeviceType",
+                "DeviceInfo",
+            ]
+        )
+    ]
+
+    if not identity_features:
+
+        st.warning(
+            "No identity features found. "
+            "Upload the identity CSV file and join it with the transaction file."
+        )
+
+    else:
+
+        st.success(
+            f"{len(identity_features)} identity features detected."
+        )
+
+        identity_summary = pd.DataFrame({
+            "Feature": identity_features,
+            "Missing count": [
+                int(df[col].isna().sum())
+                for col in identity_features
+            ],
+            "Missing percentage": [
+                float(df[col].isna().mean() * 100)
+                for col in identity_features
+            ],
+            "Unique values": [
+                int(df[col].nunique(dropna=True))
+                for col in identity_features
+            ],
+        })
+
+        st.dataframe(
+            identity_summary.sort_values(
+                "Missing percentage",
+                ascending=False,
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        selected_identity = st.selectbox(
+            "Select an identity feature",
+            identity_features,
+        )
+
+        plot_categorical_distribution(
+            df,
+            selected_identity,
+        )
+
+        if (
+            "isFraud" in df.columns
+            and df[selected_identity].nunique(dropna=True) <= 100
+        ):
+
+            st.subheader(
+                f"Fraud rate by {selected_identity}"
+            )
+
+            identity_df = df[
+                [selected_identity, "isFraud"]
+            ].copy()
+
+            identity_df[selected_identity] = (
+                identity_df[selected_identity]
+                .fillna("Missing")
+                .astype(str)
+            )
+
+            fraud_identity = (
+                identity_df.groupby(selected_identity)["isFraud"]
+                .agg(["mean", "count"])
+                .reset_index()
+            )
+
+            fraud_identity.columns = [
+                selected_identity,
+                "Fraud rate",
+                "Transactions",
+            ]
+
+            fraud_identity = fraud_identity.sort_values(
+                "Transactions",
+                ascending=False,
+            ).head(20)
+
+            fig = px.bar(
+                fraud_identity,
+                x=selected_identity,
+                y="Fraud rate",
+                hover_data=["Transactions"],
+                title="Fraud rate by identity feature",
+            )
+
+            fig.update_yaxes(tickformat=".1%")
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+            )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.divider()
+
+st.caption(
+    "IEEE-CIS Fraud Detection | ENSI Challenge 2 | "
+    "Interactive Data Explorer"
+)
