@@ -1,10 +1,13 @@
 
 from pathlib import Path
+import os
+import subprocess
+import sys
+import zipfile
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 
@@ -31,15 +34,166 @@ DATA_DIR = PROJECT_DIR / "data"
 
 
 # ============================================================
+# KAGGLE DATASET DOWNLOAD
+# ============================================================
+
+def is_valid_csv(path):
+    """Check whether a file exists and is not a Git LFS pointer."""
+
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+
+    try:
+        with open(path, "rb") as file:
+            first_line = file.readline(300).decode(
+                "utf-8", errors="ignore"
+            )
+
+        return "git-lfs.github.com/spec/v1" not in first_line
+
+    except OSError:
+        return False
+
+
+def ensure_kaggle_dataset(dataset_type):
+    """
+    Download missing IEEE-CIS CSV files from Kaggle.
+
+    Existing valid CSV files are kept.
+    Git LFS pointer files are removed and replaced.
+    """
+
+    if dataset_type not in ("train", "test"):
+        raise ValueError("Dataset type must be train or test.")
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    filenames = [
+        f"{dataset_type}_transaction.csv",
+        f"{dataset_type}_identity.csv",
+    ]
+
+    # Download only files that are missing or invalid.
+    missing_files = []
+
+    for filename in filenames:
+        csv_path = DATA_DIR / filename
+
+        if is_valid_csv(csv_path):
+            continue
+
+        if csv_path.exists():
+            csv_path.unlink()
+
+        missing_files.append(filename)
+
+    if not missing_files:
+        return
+
+    # Read Kaggle credentials from Streamlit Secrets.
+    try:
+        username = st.secrets["kaggle"]["username"]
+        key = st.secrets["kaggle"]["key"]
+
+    except Exception:
+        raise RuntimeError(
+            "Kaggle credentials are missing. "
+            "Add [kaggle], username and key in "
+            "Streamlit Cloud Settings > Secrets."
+        )
+
+    env = os.environ.copy()
+    env["KAGGLE_USERNAME"] = str(username)
+    env["KAGGLE_KEY"] = str(key)
+
+    for filename in missing_files:
+
+        st.info(f"Downloading {filename} from Kaggle...")
+
+        zip_path = DATA_DIR / f"{filename}.zip"
+        csv_path = DATA_DIR / filename
+
+        command = [
+            sys.executable,
+            "-m",
+            "kaggle",
+            "competitions",
+            "download",
+            "-c",
+            "ieee-fraud-detection",
+            "-f",
+            filename,
+            "-p",
+            str(DATA_DIR),
+        ]
+
+        result = subprocess.run(
+            command,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Kaggle download failed for {filename}.\n"
+                f"{result.stderr[-3000:]}"
+            )
+
+        if not zip_path.exists():
+            raise RuntimeError(
+                f"Kaggle did not create the expected file: "
+                f"{zip_path.name}. "
+                f"Command output: {result.stdout[-1000:]}"
+            )
+
+        # Extract the CSV.
+        try:
+            with zipfile.ZipFile(zip_path, "r") as archive:
+
+                expected_name = Path(filename).name
+
+                matching_files = [
+                    name for name in archive.namelist()
+                    if Path(name).name == expected_name
+                ]
+
+                if not matching_files:
+                    raise RuntimeError(
+                        f"{expected_name} was not found "
+                        "inside the downloaded ZIP archive."
+                    )
+
+                with archive.open(matching_files[0]) as source:
+                    with open(csv_path, "wb") as destination:
+                        while True:
+                            chunk = source.read(1024 * 1024)
+
+                            if not chunk:
+                                break
+
+                            destination.write(chunk)
+
+        finally:
+            if zip_path.exists():
+                zip_path.unlink()
+
+        if not is_valid_csv(csv_path):
+            raise RuntimeError(
+                f"The downloaded file {filename} is invalid."
+            )
+
+        st.success(f"{filename} downloaded successfully.")
+
+
+# ============================================================
 # DATA LOADING FUNCTIONS
 # ============================================================
 
 def normalize_identity_columns(df):
-    """
-    Normalize identity column names:
-    id-01 -> id_01
-    id-02 -> id_02
-    """
+    """Normalize identity column names: id-01 -> id_01."""
+
     df = df.copy()
 
     df.columns = [
@@ -50,23 +204,21 @@ def normalize_identity_columns(df):
     return df
 
 
-
 def read_csv_file(file):
+    """Read a CSV file and normalize its column names."""
+
     df = pd.read_csv(
         file,
-        sep=None,
-        engine="python",
-        encoding="utf-8-sig"
+        low_memory=False,
+        encoding="utf-8-sig",
     )
 
-    # Clean column names
     df.columns = (
         df.columns.astype(str)
         .str.replace("\ufeff", "", regex=False)
         .str.strip()
     )
 
-    # Normalize TransactionID
     for col in df.columns:
         if col.lower().replace("_", "").replace(" ", "") == "transactionid":
             df = df.rename(columns={col: "TransactionID"})
@@ -76,29 +228,24 @@ def read_csv_file(file):
 
 
 def merge_transaction_identity(transaction_df, identity_df):
-    """
-    Merge transaction and identity datasets using TransactionID.
-
-    The transaction table is kept intact.
-    Identity columns are added using a left join.
-    """
+    """Merge transaction and identity data using TransactionID."""
 
     transaction_df = transaction_df.copy()
     identity_df = normalize_identity_columns(identity_df.copy())
 
     if "TransactionID" not in transaction_df.columns:
         raise ValueError(
-            "The transaction file must contain TransactionID."
+            "TransactionID is missing from the transaction file."
         )
 
     if "TransactionID" not in identity_df.columns:
         raise ValueError(
-            "The identity file must contain TransactionID."
+            "TransactionID is missing from the identity file."
         )
 
     if identity_df["TransactionID"].duplicated().any():
         raise ValueError(
-            "Duplicate TransactionID values were found in the identity file."
+            "Duplicate TransactionID values were found in identity data."
         )
 
     duplicated_columns = (
@@ -108,76 +255,56 @@ def merge_transaction_identity(transaction_df, identity_df):
 
     if duplicated_columns:
         raise ValueError(
-            "The two files contain duplicate columns other than "
-            f"TransactionID: {sorted(duplicated_columns)}"
+            "Duplicate columns found: "
+            f"{sorted(duplicated_columns)}"
         )
 
-    merged = transaction_df.merge(
+    return transaction_df.merge(
         identity_df,
         on="TransactionID",
         how="left",
         validate="one_to_one",
     )
 
-    return merged
-
 
 def load_local_dataset(dataset_type):
+    """Load and merge a local or Kaggle-downloaded dataset."""
+
+    ensure_kaggle_dataset(dataset_type)
 
     transaction_path = DATA_DIR / f"{dataset_type}_transaction.csv"
     identity_path = DATA_DIR / f"{dataset_type}_identity.csv"
 
-    # Check that files exist
-    if not transaction_path.exists():
+    if not is_valid_csv(transaction_path):
         raise FileNotFoundError(
-            f"Transaction file not found: {transaction_path}"
+            f"Invalid transaction file: {transaction_path}"
         )
 
-    if not identity_path.exists():
+    if not is_valid_csv(identity_path):
         raise FileNotFoundError(
-            f"Identity file not found: {identity_path}"
+            f"Invalid identity file: {identity_path}"
         )
 
-    # Check whether files are Git LFS pointers
-    for path in [transaction_path, identity_path]:
-        with open(path, "rb") as f:
-            first_line = f.readline().decode(
-                "utf-8", errors="ignore"
-            )
-
-        if "git-lfs.github.com/spec/v1" in first_line:
-            raise ValueError(
-                f"{path.name} is a Git LFS pointer, "
-                "not the actual CSV dataset."
-            )
-
-    # Read CSV files
     transaction_df = read_csv_file(transaction_path)
     identity_df = read_csv_file(identity_path)
 
-    # Normalize identity columns
-    identity_df = normalize_identity_columns(identity_df)
-
-    # Validate TransactionID
     if "TransactionID" not in transaction_df.columns:
         raise ValueError(
-            f"TransactionID missing from transaction data. "
+            "TransactionID missing from transaction data. "
             f"Columns found: {transaction_df.columns.tolist()[:20]}"
         )
 
     if "TransactionID" not in identity_df.columns:
         raise ValueError(
-            f"TransactionID missing from identity data. "
+            "TransactionID missing from identity data. "
             f"Columns found: {identity_df.columns.tolist()[:20]}"
         )
 
-    # Merge transaction and identity datasets
-    merged_df = merge_transaction_identity(
+    return merge_transaction_identity(
         transaction_df,
-        identity_df
+        identity_df,
     )
 
-    return merged_df
 
 # ============================================================
 # ANALYSIS FUNCTIONS
@@ -188,68 +315,50 @@ def prepare_dataframe(df):
 
     df = df.copy()
 
-    if "TransactionAmt" in df.columns:
-        df["TransactionAmt"] = pd.to_numeric(
-            df["TransactionAmt"],
-            errors="coerce",
-        )
-
-    if "TransactionDT" in df.columns:
-        df["TransactionDT"] = pd.to_numeric(
-            df["TransactionDT"],
-            errors="coerce",
-        )
-
-    if "isFraud" in df.columns:
-        df["isFraud"] = pd.to_numeric(
-            df["isFraud"],
-            errors="coerce",
-        )
+    for col in ["TransactionAmt", "TransactionDT", "isFraud"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce",
+            )
 
     return df
 
 
 def calculate_summary(df):
-    """Calculate general dataset statistics."""
+
+    total_cells = df.shape[0] * df.shape[1]
+    missing_cells = int(df.isna().sum().sum())
 
     summary = {
         "rows": len(df),
         "columns": len(df.columns),
         "duplicates": int(df.duplicated().sum()),
-        "missing_cells": int(df.isna().sum().sum()),
+        "missing_cells": missing_cells,
         "missing_percentage": (
-            100 * df.isna().sum().sum()
-            / (df.shape[0] * df.shape[1])
-            if df.shape[0] * df.shape[1] > 0
-            else 0
+            100 * missing_cells / total_cells
+            if total_cells > 0 else 0
         ),
     }
 
     if "isFraud" in df.columns:
+
         labels = pd.to_numeric(
             df["isFraud"],
             errors="coerce",
         ).dropna()
 
-        if len(labels) > 0:
+        if not labels.empty:
             summary["fraud_count"] = int((labels == 1).sum())
             summary["normal_count"] = int((labels == 0).sum())
             summary["fraud_rate"] = float((labels == 1).mean())
-        else:
-            summary["fraud_count"] = None
-            summary["normal_count"] = None
-            summary["fraud_rate"] = None
 
     return summary
 
 
 def numeric_columns(df):
-    """Return numeric columns, excluding identifiers and target."""
 
-    excluded = {
-        "TransactionID",
-        "isFraud",
-    }
+    excluded = {"TransactionID", "isFraud"}
 
     return [
         col
@@ -259,7 +368,6 @@ def numeric_columns(df):
 
 
 def categorical_columns(df):
-    """Return categorical columns."""
 
     return [
         col
@@ -270,14 +378,14 @@ def categorical_columns(df):
     ]
 
 
+# ============================================================
+# PLOTS
+# ============================================================
+
 def plot_fraud_distribution(df):
-    """Plot normal and fraudulent transactions."""
 
     if "isFraud" not in df.columns:
-        st.info(
-            "This dataset has no isFraud column. "
-            "Fraud distribution cannot be calculated."
-        )
+        st.info("Fraud labels are not available in this dataset.")
         return
 
     labels = pd.to_numeric(
@@ -311,7 +419,6 @@ def plot_fraud_distribution(df):
 
 
 def plot_transaction_amount(df):
-    """Plot transaction amount distribution."""
 
     if "TransactionAmt" not in df.columns:
         st.info("TransactionAmt is not available.")
@@ -329,15 +436,17 @@ def plot_transaction_amount(df):
     fig = px.histogram(
         x=amounts.clip(upper=amounts.quantile(0.99)),
         nbins=60,
-        title="Transaction amount distribution (up to 99th percentile)",
-        labels={"x": "Transaction amount", "y": "Number of transactions"},
+        title="Transaction amount distribution",
+        labels={
+            "x": "Transaction amount",
+            "y": "Number of transactions",
+        },
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
 
 def plot_amount_by_fraud(df):
-    """Compare transaction amounts for fraud and normal transactions."""
 
     required = {"TransactionAmt", "isFraud"}
 
@@ -345,7 +454,9 @@ def plot_amount_by_fraud(df):
         st.info("TransactionAmt or isFraud is missing.")
         return
 
-    plot_df = df[["TransactionAmt", "isFraud"]].copy()
+    plot_df = df[
+        ["TransactionAmt", "isFraud"]
+    ].copy()
 
     plot_df["TransactionAmt"] = pd.to_numeric(
         plot_df["TransactionAmt"],
@@ -355,7 +466,6 @@ def plot_amount_by_fraud(df):
     plot_df = plot_df.dropna()
 
     if plot_df.empty:
-        st.warning("No valid values for this comparison.")
         return
 
     plot_df["Transaction type"] = plot_df["isFraud"].map({
@@ -385,53 +495,45 @@ def plot_amount_by_fraud(df):
 
 
 def plot_time_distribution(df):
-    """Plot transactions over TransactionDT."""
 
     if "TransactionDT" not in df.columns:
         st.info("TransactionDT is not available.")
         return
 
-    time_values = pd.to_numeric(
+    values = pd.to_numeric(
         df["TransactionDT"],
         errors="coerce",
     ).dropna()
 
-    if time_values.empty:
-        st.warning("No valid TransactionDT values.")
+    if values.empty:
         return
 
     time_df = pd.DataFrame({
-        "TransactionDT": time_values
+        "TransactionDT": values
     })
 
-    # TransactionDT is expressed in seconds from an arbitrary reference.
-    time_df["Time group"] = (
+    time_df["Relative day"] = (
         time_df["TransactionDT"] // 86400
     ).astype(int)
 
     daily_counts = (
-        time_df.groupby("Time group")
+        time_df.groupby("Relative day")
         .size()
         .reset_index(name="Transactions")
     )
 
     fig = px.line(
         daily_counts,
-        x="Time group",
+        x="Relative day",
         y="Transactions",
         markers=True,
         title="Transactions over time",
-        labels={
-            "Time group": "Relative day",
-            "Transactions": "Number of transactions",
-        },
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
 
 def plot_categorical_distribution(df, column):
-    """Plot the most frequent categories."""
 
     if column not in df.columns:
         return
@@ -463,7 +565,6 @@ def plot_categorical_distribution(df, column):
 
 
 def plot_missing_values(df):
-    """Display columns with the highest missing-value rates."""
 
     missing = (
         df.isna()
@@ -479,11 +580,7 @@ def plot_missing_values(df):
         return
 
     missing_df = missing.reset_index()
-
-    missing_df.columns = [
-        "Column",
-        "Missing percentage",
-    ]
+    missing_df.columns = ["Column", "Missing percentage"]
 
     fig = px.bar(
         missing_df,
@@ -501,7 +598,6 @@ def plot_missing_values(df):
 
 
 def plot_correlations(df):
-    """Display correlations between numeric features."""
 
     cols = numeric_columns(df)
 
@@ -509,12 +605,10 @@ def plot_correlations(df):
         st.info("Not enough numeric columns for correlation analysis.")
         return
 
-    max_features = min(len(cols), 25)
-
     selected = st.multiselect(
         "Select numeric features",
         options=cols,
-        default=cols[:max_features],
+        default=cols[:min(len(cols), 25)],
         key="correlation_features",
     )
 
@@ -538,7 +632,6 @@ def plot_correlations(df):
 
 
 def show_feature_statistics(df):
-    """Display descriptive statistics."""
 
     cols = numeric_columns(df)
 
@@ -547,16 +640,10 @@ def show_feature_statistics(df):
         return
 
     stats = df[cols].describe().T
-
     stats["missing"] = df[cols].isna().sum()
-    stats["missing_pct"] = (
-        df[cols].isna().mean() * 100
-    )
+    stats["missing_pct"] = df[cols].isna().mean() * 100
 
-    st.dataframe(
-        stats,
-        use_container_width=True,
-    )
+    st.dataframe(stats, use_container_width=True)
 
 
 # ============================================================
@@ -565,43 +652,27 @@ def show_feature_statistics(df):
 
 st.sidebar.header("Dataset selection")
 
-available_local_files = (
-    (DATA_DIR / "train_transaction.csv").exists()
-    and (DATA_DIR / "train_identity.csv").exists()
-)
-
-available_test_files = (
-    (DATA_DIR / "test_transaction.csv").exists()
-    and (DATA_DIR / "test_identity.csv").exists()
-)
-
-dataset_options = [
-    "Upload my own files",
-]
-
-if available_local_files:
-    dataset_options.insert(0, "Local training dataset")
-
-if available_test_files:
-    dataset_options.insert(
-        1 if available_local_files else 0,
-        "Local test dataset",
-    )
-
 dataset_source = st.sidebar.radio(
     "Choose data source",
-    dataset_options,
+    [
+        "Kaggle training dataset",
+        "Kaggle test dataset",
+        "Upload my own files",
+    ],
 )
 
 df = None
 
+
 # ============================================================
-# LOAD LOCAL TRAIN OR TEST DATASET
+# LOAD KAGGLE TRAINING DATASET
 # ============================================================
 
-if dataset_source == "Local training dataset":
+if dataset_source == "Kaggle training dataset":
 
-    with st.spinner("Loading and merging training files..."):
+    with st.spinner(
+        "Checking and loading Kaggle training data..."
+    ):
 
         try:
             df = load_local_dataset("train")
@@ -615,9 +686,15 @@ if dataset_source == "Local training dataset":
             st.stop()
 
 
-elif dataset_source == "Local test dataset":
+# ============================================================
+# LOAD KAGGLE TEST DATASET
+# ============================================================
 
-    with st.spinner("Loading and merging test files..."):
+elif dataset_source == "Kaggle test dataset":
+
+    with st.spinner(
+        "Checking and loading Kaggle test data..."
+    ):
 
         try:
             df = load_local_dataset("test")
@@ -640,7 +717,7 @@ elif dataset_source == "Upload my own files":
     st.subheader("Upload IEEE-CIS CSV files")
 
     st.write(
-        "Upload the transaction file and, optionally, "
+        "Upload the transaction file and optionally "
         "its corresponding identity file."
     )
 
@@ -648,14 +725,12 @@ elif dataset_source == "Upload my own files":
         "Transaction CSV",
         type=["csv"],
         key="transaction_upload",
-        help="Example: train_transaction.csv",
     )
 
     identity_file = st.file_uploader(
         "Identity CSV (optional)",
         type=["csv"],
         key="identity_upload",
-        help="Example: train_identity.csv",
     )
 
     if transaction_file is not None:
@@ -707,7 +782,8 @@ if len(df) > MAX_ROWS:
 
     st.warning(
         f"The dataset contains {len(df):,} rows. "
-        f"For interactive analysis, the first {MAX_ROWS:,} rows will be used."
+        f"For interactive analysis, the first {MAX_ROWS:,} rows "
+        "will be used."
     )
 
     df = df.iloc[:MAX_ROWS].copy()
@@ -727,27 +803,13 @@ summary = calculate_summary(df)
 
 c1, c2, c3, c4 = st.columns(4)
 
-c1.metric(
-    "Transactions",
-    f"{summary['rows']:,}",
-)
+c1.metric("Transactions", f"{summary['rows']:,}")
+c2.metric("Features", f"{summary['columns']:,}")
+c3.metric("Duplicate rows", f"{summary['duplicates']:,}")
+c4.metric("Missing cells", f"{summary['missing_percentage']:.2f}%")
 
-c2.metric(
-    "Features",
-    f"{summary['columns']:,}",
-)
 
-c3.metric(
-    "Duplicate rows",
-    f"{summary['duplicates']:,}",
-)
-
-c4.metric(
-    "Missing cells",
-    f"{summary['missing_percentage']:.2f}%",
-)
-
-if summary.get("fraud_rate") is not None:
+if "fraud_rate" in summary:
 
     c1, c2, c3 = st.columns(3)
 
@@ -770,8 +832,7 @@ else:
 
     st.info(
         "This dataset has no usable isFraud labels. "
-        "Fraud rates and supervised fraud comparisons are unavailable. "
-        "You can still explore its features and missing values."
+        "Fraud rates and supervised fraud comparisons are unavailable."
     )
 
 
@@ -793,12 +854,10 @@ with st.expander("Preview dataset", expanded=False):
     info_df = pd.DataFrame({
         "Column": df.columns,
         "Data type": [
-            str(df[col].dtype)
-            for col in df.columns
+            str(df[col].dtype) for col in df.columns
         ],
         "Missing values": [
-            int(df[col].isna().sum())
-            for col in df.columns
+            int(df[col].isna().sum()) for col in df.columns
         ],
         "Missing percentage": [
             float(df[col].isna().mean() * 100)
@@ -854,15 +913,12 @@ with st.expander("Preview dataset", expanded=False):
 with tab_overview:
 
     st.subheader("Fraud distribution")
-
     plot_fraud_distribution(df)
 
     st.subheader("Transaction amounts")
-
     plot_transaction_amount(df)
 
     st.subheader("Amount comparison by fraud class")
-
     plot_amount_by_fraud(df)
 
 
@@ -873,7 +929,6 @@ with tab_overview:
 with tab_time:
 
     st.subheader("Transaction activity over time")
-
     plot_time_distribution(df)
 
     if "TransactionDT" in df.columns:
@@ -903,6 +958,11 @@ with tab_time:
             errors="coerce",
         )
 
+        time_df["isFraud"] = pd.to_numeric(
+            time_df["isFraud"],
+            errors="coerce",
+        )
+
         time_df = time_df.dropna()
 
         time_df["Relative day"] = (
@@ -925,10 +985,7 @@ with tab_time:
 
         fig.update_yaxes(tickformat=".1%")
 
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-        )
+        st.plotly_chart(fig, use_container_width=True)
 
 
 # ============================================================
@@ -957,10 +1014,7 @@ with tab_categories:
             selected_category,
         )
 
-        if (
-            "isFraud" in df.columns
-            and selected_category in df.columns
-        ):
+        if "isFraud" in df.columns:
 
             st.subheader(
                 f"Fraud rate by {selected_category}"
@@ -969,6 +1023,11 @@ with tab_categories:
             category_df = df[
                 [selected_category, "isFraud"]
             ].copy()
+
+            category_df["isFraud"] = pd.to_numeric(
+                category_df["isFraud"],
+                errors="coerce",
+            )
 
             category_df[selected_category] = (
                 category_df[selected_category]
@@ -1041,10 +1100,6 @@ with tab_numeric:
                 ),
                 nbins=50,
                 title=f"Distribution of {selected_numeric}",
-                labels={
-                    "x": selected_numeric,
-                    "y": "Number of transactions",
-                },
             )
 
             st.plotly_chart(
@@ -1107,7 +1162,6 @@ with tab_missing:
 with tab_correlations:
 
     st.subheader("Feature correlation analysis")
-
     plot_correlations(df)
 
 
@@ -1123,10 +1177,7 @@ with tab_identity:
         col for col in df.columns
         if (
             col.startswith("id_")
-            or col in [
-                "DeviceType",
-                "DeviceInfo",
-            ]
+            or col in ["DeviceType", "DeviceInfo"]
         )
     ]
 
@@ -1134,7 +1185,8 @@ with tab_identity:
 
         st.warning(
             "No identity features found. "
-            "Upload the identity CSV file and join it with the transaction file."
+            "Upload the identity CSV file and join it "
+            "with the transaction file."
         )
 
     else:
@@ -1190,6 +1242,11 @@ with tab_identity:
             identity_df = df[
                 [selected_identity, "isFraud"]
             ].copy()
+
+            identity_df["isFraud"] = pd.to_numeric(
+                identity_df["isFraud"],
+                errors="coerce",
+            )
 
             identity_df[selected_identity] = (
                 identity_df[selected_identity]
