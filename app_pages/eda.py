@@ -92,15 +92,16 @@ def ensure_kaggle_dataset(dataset_type):
 
     # Read Kaggle credentials from Streamlit Secrets.
     try:
-        username = st.secrets["kaggle"]["username"]
-        key = st.secrets["kaggle"]["key"]
+    api_token = st.secrets["KAGGLE_API_TOKEN"]
 
     except Exception:
         raise RuntimeError(
-            "Kaggle credentials are missing. "
-            "Add [kaggle], username and key in "
-            "Streamlit Cloud Settings > Secrets."
+            "Kaggle API token is missing. "
+            "Add KAGGLE_API_TOKEN in Streamlit Cloud Secrets."
         )
+    
+    env = os.environ.copy()
+    env["KAGGLE_API_TOKEN"] = str(api_token)
 
     env = os.environ.copy()
     env["KAGGLE_USERNAME"] = str(username)
