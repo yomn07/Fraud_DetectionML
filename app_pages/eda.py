@@ -50,9 +50,27 @@ def normalize_identity_columns(df):
     return df
 
 
+
 def read_csv_file(file):
-    """Read a CSV file safely."""
-    return pd.read_csv(file, low_memory=False)
+    """Read CSV while handling separators, encoding and column names."""
+
+    df = pd.read_csv(
+        file,
+        sep=None,
+        engine="python",
+        encoding="utf-8-sig",
+        low_memory=False,
+    )
+
+    # Remove spaces and invisible characters from column names
+    df.columns = (
+        df.columns.astype(str)
+        .str.replace("\ufeff", "", regex=False)
+        .str.strip()
+    )
+
+    return df
+
 
 
 def merge_transaction_identity(transaction_df, identity_df):
