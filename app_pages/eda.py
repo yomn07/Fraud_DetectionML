@@ -71,7 +71,13 @@ def read_csv_file(file):
 
     return df
 
+transaction_df = read_csv_file(transaction_path)
 
+st.write("Detected transaction columns:")
+st.write(transaction_df.columns.tolist())
+
+st.write("First 5 rows:")
+st.dataframe(transaction_df.head())
 
 def merge_transaction_identity(transaction_df, identity_df):
     """
