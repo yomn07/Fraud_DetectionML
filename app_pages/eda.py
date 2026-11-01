@@ -90,16 +90,19 @@ def ensure_kaggle_dataset(dataset_type):
     if not missing_files:
         return
 
-    # Read Kaggle credentials from Streamlit Secrets.
+    
+    # Read Kaggle API token from Streamlit Secrets
     try:
-    api_token = st.secrets["KAGGLE_API_TOKEN"]
-
+        api_token = st.secrets["KAGGLE_API_TOKEN"]
     except Exception:
         raise RuntimeError(
             "Kaggle API token is missing. "
             "Add KAGGLE_API_TOKEN in Streamlit Cloud Secrets."
         )
-    
+
+    env = os.environ.copy()
+    env["KAGGLE_API_TOKEN"] = str(api_token)
+
     env = os.environ.copy()
     env["KAGGLE_API_TOKEN"] = str(api_token)
 
