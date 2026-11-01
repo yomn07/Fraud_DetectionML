@@ -267,6 +267,7 @@ def merge_transaction_identity(transaction_df, identity_df):
     )
 
 
+
 def load_local_dataset(dataset_type):
     """Load and merge a local or Kaggle-downloaded dataset."""
 
@@ -285,6 +286,8 @@ def load_local_dataset(dataset_type):
             f"Invalid identity file: {identity_path}"
         )
 
+    # Read BOTH CSV files
+    transaction_df = read_csv_file(transaction_path)
     identity_df = read_csv_file(identity_path)
 
     if "TransactionID" not in transaction_df.columns:
