@@ -90,10 +90,13 @@ def ensure_kaggle_dataset(dataset_type):
     if not missing_files:
         return
 
-    
-    # Read Kaggle API token from Streamlit Secrets
+    # --------------------------------------------------------
+    # KAGGLE AUTHENTICATION
+    # --------------------------------------------------------
+
     try:
         api_token = st.secrets["KAGGLE_API_TOKEN"]
+
     except Exception:
         raise RuntimeError(
             "Kaggle API token is missing. "
@@ -102,6 +105,10 @@ def ensure_kaggle_dataset(dataset_type):
 
     env = os.environ.copy()
     env["KAGGLE_API_TOKEN"] = str(api_token)
+
+    # --------------------------------------------------------
+    # DOWNLOAD AND EXTRACT FILES
+    # --------------------------------------------------------
 
     for filename in missing_files:
 
@@ -132,7 +139,6 @@ def ensure_kaggle_dataset(dataset_type):
             timeout=1800,
         )
 
-        
         if result.returncode != 0:
             raise RuntimeError(
                 f"Kaggle download failed for {filename}.\n"
@@ -140,7 +146,6 @@ def ensure_kaggle_dataset(dataset_type):
                 f"STDOUT:\n{result.stdout[-3000:]}\n"
                 f"STDERR:\n{result.stderr[-3000:]}"
             )
-
 
         if not zip_path.exists():
             raise RuntimeError(
@@ -168,6 +173,7 @@ def ensure_kaggle_dataset(dataset_type):
 
                 with archive.open(matching_files[0]) as source:
                     with open(csv_path, "wb") as destination:
+
                         while True:
                             chunk = source.read(1024 * 1024)
 
@@ -268,7 +274,6 @@ def merge_transaction_identity(transaction_df, identity_df):
     )
 
 
-
 def load_local_dataset(dataset_type):
     """Load and merge a local or Kaggle-downloaded dataset."""
 
@@ -287,7 +292,7 @@ def load_local_dataset(dataset_type):
             f"Invalid identity file: {identity_path}"
         )
 
-    # Read BOTH CSV files
+    # Read BOTH CSV files.
     transaction_df = read_csv_file(transaction_path)
     identity_df = read_csv_file(identity_path)
 
