@@ -135,11 +135,15 @@ def ensure_kaggle_dataset(dataset_type):
             timeout=1800,
         )
 
+        
         if result.returncode != 0:
             raise RuntimeError(
                 f"Kaggle download failed for {filename}.\n"
-                f"{result.stderr[-3000:]}"
+                f"Return code: {result.returncode}\n"
+                f"STDOUT:\n{result.stdout[-3000:]}\n"
+                f"STDERR:\n{result.stderr[-3000:]}"
             )
+
 
         if not zip_path.exists():
             raise RuntimeError(
