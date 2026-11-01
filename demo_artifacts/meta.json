@@ -1,0 +1,329 @@
+{
+ "is_demo": true,
+ "created": "2026-11-01T07:25:36+00:00",
+ "feature_names": [
+  "TransactionAmt",
+  "ProductCD",
+  "card1",
+  "card2",
+  "card3",
+  "card4",
+  "card5",
+  "card6",
+  "addr1",
+  "addr2",
+  "P_emaildomain",
+  "R_emaildomain",
+  "C1",
+  "C2",
+  "C3",
+  "D1",
+  "D2",
+  "M1",
+  "M2",
+  "M3",
+  "V1",
+  "V2",
+  "V3",
+  "id_01",
+  "DeviceType",
+  "TransactionHour",
+  "TransactionHour_sin",
+  "TransactionHour_cos",
+  "uid_count",
+  "uid_amt_mean",
+  "card_count",
+  "card_amt_mean",
+  "email_count",
+  "email_amt_mean",
+  "uid_amt_std",
+  "amt_to_uid_mean",
+  "uid_prior_count"
+ ],
+ "new_features": [
+  "uid_count",
+  "uid_amt_mean",
+  "card_count",
+  "card_amt_mean",
+  "email_count",
+  "email_amt_mean",
+  "uid_amt_std",
+  "amt_to_uid_mean",
+  "uid_prior_count"
+ ],
+ "categorical_columns": [
+  "ProductCD",
+  "card4",
+  "card6",
+  "P_emaildomain",
+  "R_emaildomain",
+  "M1",
+  "M2",
+  "M3",
+  "DeviceType"
+ ],
+ "category_levels": {
+  "ProductCD": [
+   "W",
+   "C",
+   "R",
+   "H",
+   "S"
+  ],
+  "card4": [
+   "visa",
+   "american express",
+   "mastercard",
+   "discover"
+  ],
+  "card6": [
+   "debit",
+   "credit"
+  ],
+  "P_emaildomain": [
+   "hotmail.com",
+   "gmail.com",
+   "yahoo.com",
+   "anonymous.com"
+  ],
+  "R_emaildomain": [
+   "gmail.com"
+  ],
+  "M1": [
+   "T",
+   "F"
+  ],
+  "M2": [
+   "T",
+   "F"
+  ],
+  "M3": [
+   "T",
+   "F"
+  ],
+  "DeviceType": [
+   "desktop",
+   "mobile"
+  ]
+ },
+ "thresholds": {
+  "f2": 0.10918450044025071,
+  "cost": 0.0027863770362323826,
+  "capped": 0.2703146413239229
+ },
+ "cost": {
+  "fp": 1,
+  "fn": 300,
+  "max_alert_rate": 0.05
+ },
+ "best_iteration": 154,
+ "split": "synthetic data, chronological 70/15/15",
+ "n_holdout": 10500,
+ "holdout_fraud_rate": 0.038857142857142854,
+ "n_reference_rows": 70000,
+ "model_table": [
+  {
+   "Model": "LightGBM baseline",
+   "AUC": 0.898594,
+   "AP": 0.513263,
+   "Recall @1%": 0.215686,
+   "Recall @5%": 0.563725
+  },
+  {
+   "Model": "LightGBM + client features",
+   "AUC": 0.903151,
+   "AP": 0.53903,
+   "Recall @1%": 0.223039,
+   "Recall @5%": 0.568627
+  }
+ ],
+ "experiments": {},
+ "time_inconsistent_features": [],
+ "importance": [
+  {
+   "feature": "C1",
+   "gain": 30513.765269,
+   "share": 0.290603
+  },
+  {
+   "feature": "C2",
+   "gain": 26456.709757,
+   "share": 0.251965
+  },
+  {
+   "feature": "amt_to_uid_mean",
+   "gain": 10518.230049,
+   "share": 0.100172
+  },
+  {
+   "feature": "TransactionAmt",
+   "gain": 3804.920651,
+   "share": 0.036237
+  },
+  {
+   "feature": "V3",
+   "gain": 3592.779483,
+   "share": 0.034216
+  },
+  {
+   "feature": "card2",
+   "gain": 2907.776624,
+   "share": 0.027693
+  },
+  {
+   "feature": "uid_amt_std",
+   "gain": 2641.180253,
+   "share": 0.025154
+  },
+  {
+   "feature": "V1",
+   "gain": 2394.810992,
+   "share": 0.022807
+  },
+  {
+   "feature": "addr1",
+   "gain": 2005.435789,
+   "share": 0.019099
+  },
+  {
+   "feature": "TransactionHour",
+   "gain": 1928.354645,
+   "share": 0.018365
+  },
+  {
+   "feature": "D1",
+   "gain": 1884.481601,
+   "share": 0.017947
+  },
+  {
+   "feature": "D2",
+   "gain": 1860.275935,
+   "share": 0.017717
+  },
+  {
+   "feature": "V2",
+   "gain": 1835.93088,
+   "share": 0.017485
+  },
+  {
+   "feature": "card_amt_mean",
+   "gain": 1505.668993,
+   "share": 0.01434
+  },
+  {
+   "feature": "card1",
+   "gain": 1420.54621,
+   "share": 0.013529
+  },
+  {
+   "feature": "uid_amt_mean",
+   "gain": 1297.522709,
+   "share": 0.012357
+  },
+  {
+   "feature": "uid_prior_count",
+   "gain": 1198.314958,
+   "share": 0.011412
+  },
+  {
+   "feature": "card_count",
+   "gain": 1129.21829,
+   "share": 0.010754
+  },
+  {
+   "feature": "uid_count",
+   "gain": 1093.872647,
+   "share": 0.010418
+  },
+  {
+   "feature": "email_count",
+   "gain": 1049.777123,
+   "share": 0.009998
+  },
+  {
+   "feature": "id_01",
+   "gain": 796.971739,
+   "share": 0.00759
+  },
+  {
+   "feature": "TransactionHour_sin",
+   "gain": 700.594625,
+   "share": 0.006672
+  },
+  {
+   "feature": "TransactionHour_cos",
+   "gain": 562.670579,
+   "share": 0.005359
+  },
+  {
+   "feature": "email_amt_mean",
+   "gain": 410.557508,
+   "share": 0.00391
+  },
+  {
+   "feature": "card5",
+   "gain": 320.544242,
+   "share": 0.003053
+  },
+  {
+   "feature": "M3",
+   "gain": 237.433289,
+   "share": 0.002261
+  },
+  {
+   "feature": "M2",
+   "gain": 163.572469,
+   "share": 0.001558
+  },
+  {
+   "feature": "DeviceType",
+   "gain": 156.949851,
+   "share": 0.001495
+  },
+  {
+   "feature": "R_emaildomain",
+   "gain": 122.22821,
+   "share": 0.001164
+  },
+  {
+   "feature": "card6",
+   "gain": 118.077171,
+   "share": 0.001125
+  },
+  {
+   "feature": "card3",
+   "gain": 114.92307,
+   "share": 0.001094
+  },
+  {
+   "feature": "M1",
+   "gain": 98.28872,
+   "share": 0.000936
+  },
+  {
+   "feature": "P_emaildomain",
+   "gain": 87.76298,
+   "share": 0.000836
+  },
+  {
+   "feature": "ProductCD",
+   "gain": 66.34705,
+   "share": 0.000632
+  },
+  {
+   "feature": "card4",
+   "gain": 4.93013,
+   "share": 4.7e-05
+  },
+  {
+   "feature": "C3",
+   "gain": 0.0,
+   "share": 0.0
+  },
+  {
+   "feature": "addr2",
+   "gain": 0.0,
+   "share": 0.0
+  }
+ ]
+}
