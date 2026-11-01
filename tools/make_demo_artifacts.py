@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from core.keys import hash_keys  # noqa: E402,F401
 from tools.export_artifacts import export_artifacts  # noqa: E402
+from tools.export_extras import export_extras  # noqa: E402
+from core.eda import build_eda  # noqa: E402
+from core.unsup import UnsupFeaturizer  # noqa: E402
 
 RNG = np.random.RandomState(7)
 N_CLIENTS, N_ROWS, DAYS = 2500, 70000, 150
@@ -141,7 +144,55 @@ def main():
         category_levels=levels, y_valid=y.iloc[i_tr:i_va].to_numpy(), p_valid=pv2, y_hold=yh,
         p_hold={"p_baseline": ph1, "p_v2": ph2}, day_hold=(df["TransactionDT"].iloc[i_va:] // 86400).to_numpy(),
         tables={"model_table": table}, is_demo=True, best_iteration=int(m2.best_iteration_),
-        split_note="synthetic data, chronological 70/15/15")
+        split_note="synthetic data, chronological 70/15/15",
+        amount_hold=df["TransactionAmt"].iloc[i_va:].to_numpy(), amount_valid=df["TransactionAmt"].iloc[i_tr:i_va].to_numpy(),
+        p_valid_all={"p_baseline": pv1})
+
+    # ---- unsupervised detectors (same recipe as notebook section 8, "fixed" feature mode)
+    from sklearn.decomposition import PCA
+    from sklearn.ensemble import IsolationForest
+    from sklearn.kernel_approximation import Nystroem
+    from sklearn.linear_model import SGDOneClassSVM
+    from sklearn.neural_network import MLPRegressor
+    from sklearn.pipeline import make_pipeline
+    chosen = [c for c in ["C1", "C2", "C3", "D1", "D2", "TransactionAmt", "TransactionHour", "card1", "card2", "card5",
+                          "addr1", "P_emaildomain", "card6"] if c in X.columns]
+    ID_LIKE = ["card1", "card2", "card3", "card5", "addr1", "addr2"]
+    freq_cols = [c for c in chosen if c in cat_cols or c in ID_LIKE]
+    num_cols = [c for c in chosen if c not in freq_cols and pd.api.types.is_numeric_dtype(X[c])]
+    Xtr = X.iloc[:i_tr]
+    big = Xtr.sample(n=min(20000, len(Xtr)), random_state=42)
+    feat = UnsupFeaturizer(num_cols, freq_cols).fit_freq(Xtr).fit_scale(big)
+    Zb = feat.transform(big)
+    pca = PCA(n_components=0.95, svd_solver="full", random_state=42).fit(Zb)
+    Pb = pca.transform(Zb)
+    if_model = IsolationForest(n_estimators=100, max_samples=1024, random_state=42, n_jobs=-1).fit(Zb)
+    svm_model = make_pipeline(Nystroem(gamma=1.0 / Pb.shape[1], n_components=100, random_state=42),
+                              SGDOneClassSVM(nu=0.05, random_state=42)).fit(Pb)
+    ae_model = MLPRegressor(hidden_layer_sizes=(16, 6, 16), max_iter=60, random_state=42).fit(Zb[:10000], Zb[:10000])
+    hold_idx = X.iloc[i_va:].sample(n=min(4000, n - i_va), random_state=42).index
+    Ze = feat.transform(X.loc[hold_idx])
+    all_scores = {"Isolation Forest": -if_model.decision_function(Ze),
+                  "One-Class SVM (approx.)": -svm_model.decision_function(pca.transform(Ze)),
+                  "Autoencoder": ((Ze - ae_model.predict(Ze)) ** 2).mean(axis=1)}
+    pos = hold_idx - i_va
+    ev = y.loc[hold_idx].to_numpy()
+    unsup_results = pd.DataFrame([{"Model": k, "ROC-AUC": roc_auc_score(ev, v), "Average Precision": average_precision_score(ev, v)}
+                                  for k, v in all_scores.items()]).sort_values("Average Precision", ascending=False)
+    print(unsup_results.round(3).to_string(index=False))
+
+    eda_df = df.copy()
+    eda_df["TransactionHour"] = hour
+    eda = build_eda(eda_df, client=A[["uid_count", "uid_prior_count", "amt_to_uid_mean"]])
+    export_extras(
+        out, y_eval=ev, day_eval=(df["TransactionDT"].loc[hold_idx] // 86400).to_numpy(),
+        sup_on_eval={"p_baseline": ph1[pos], "p_v2": ph2[pos]}, all_scores=all_scores,
+        unsup_parts={"num_cols": feat.num_cols, "freq_cols": feat.freq_cols, "freq_maps": feat.freq_maps,
+                     "imputer": feat.imputer, "scaler": feat.scaler, "pca": pca},
+        unsup_models={"if_model": if_model, "svm_model": svm_model, "ae_model": ae_model},
+        unsup_tables={"unsup_results": unsup_results},
+        unsup_settings={"feature_mode": "fixed", "num_cols": num_cols, "freq_cols": freq_cols, "fit_on_legit_only": False},
+        eda=eda, booster=m2.booster_, X_shap=X2.iloc[i_va:].sample(n=min(1500, n - i_va), random_state=42))
 
     sample = df.iloc[i_va:].sample(400, random_state=1).sort_values("TransactionDT")
     sample.drop(columns=["isFraud"]).to_csv(out / "sample_transactions.csv", index=False)

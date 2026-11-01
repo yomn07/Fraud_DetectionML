@@ -37,3 +37,29 @@ def decision_thresholds(meta):
         out["Cost-optimal (validation)"] = t["cost"]
     out["Alert-capped cost-optimal (validation)"] = t["capped"]
     return out
+
+
+def reason_codes(table, k=5, min_k=3):
+    """The 3-5 features that pushed the score up most ("reason codes" for an analyst)."""
+    pos = table[table["contribution"] > 0].head(k)
+    if len(pos) < min_k:
+        pos = table.head(min_k)
+    return [{"code": f"R{i + 1}", "feature": r.feature, "value": r.value, "effect": float(r.contribution)}
+            for i, r in enumerate(pos.itertuples())]
+
+
+def waterfall_data(table, base, n=9):
+    """Rows for a SHAP waterfall: base value, the n largest contributions, everything else, final log-odds."""
+    top = table.head(n)
+    rest = float(table["contribution"].iloc[n:].sum())
+    labels = ["Average (base value)"] + [f"{f} = {v}" for f, v in zip(top["feature"], top["value"])]
+    values = [base] + top["contribution"].tolist()
+    measure = ["absolute"] + ["relative"] * len(top)
+    if len(table) > n:
+        labels.append(f"{len(table) - n} other features")
+        values.append(rest)
+        measure.append("relative")
+    labels.append("Final log-odds")
+    values.append(base + float(table["contribution"].sum()))
+    measure.append("total")
+    return labels, values, measure

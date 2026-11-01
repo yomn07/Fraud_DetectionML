@@ -73,8 +73,8 @@ def client_features(raw, ref, mode="new"):
     return feats
 
 
-def prepare_features(raw, meta, ref, mode="new"):
-    """Return (X, info). X has exactly meta['feature_names'] in order, categoricals aligned to training levels."""
+def prepare_base(raw, meta):
+    """Raw rows -> base model columns (no client features yet). Returns (X_base, info)."""
     raw = normalize_columns(raw).reset_index(drop=True)
     missing_required = [c for c in REQUIRED_COLUMNS if c not in raw.columns]
     if missing_required:
@@ -97,15 +97,22 @@ def prepare_features(raw, meta, ref, mode="new"):
             X[c] = pd.Categorical(s.where(s.isin(levels)), categories=levels)
         else:
             X[c] = pd.to_numeric(X[c], errors="coerce").astype("float32")
-    cf = client_features(work, ref, mode)
+    info = {"rows": len(X), "missing_columns": missing_cols,
+            "unseen_category_share": {k: v for k, v in unseen.items() if v > 0},
+            "d1_missing_share": float(pd.to_numeric(work["D1"], errors="coerce").isna().mean())}
+    return X, info, work
+
+
+def attach_client(X, cf, meta):
+    X = X.copy()
     for f in meta["new_features"]:
         X[f] = cf[f].to_numpy()
-    X = X[meta["feature_names"]]
-    info = {
-        "rows": len(X),
-        "missing_columns": missing_cols,
-        "unseen_category_share": {k: v for k, v in unseen.items() if v > 0},
-        "d1_missing_share": float(pd.to_numeric(work["D1"], errors="coerce").isna().mean()),
-        "clients_seen_in_reference_share": float((cf["uid_prior_count"] > 0).mean()),
-    }
-    return X, info
+    return X[meta["feature_names"]]
+
+
+def prepare_features(raw, meta, ref, mode="new"):
+    """Return (X, info). X has exactly meta['feature_names'] in order, categoricals aligned to training levels."""
+    X, info, work = prepare_base(raw, meta)
+    cf = client_features(work, ref, mode)
+    info["clients_seen_in_reference_share"] = float((cf["uid_prior_count"] > 0).mean())
+    return attach_client(X, cf, meta), info

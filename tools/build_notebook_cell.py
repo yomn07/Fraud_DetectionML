@@ -34,6 +34,14 @@ for key, var in [("model_table", "cmp"), ("smote", "smote_cmp"), ("client_avg", 
 A_ref = A.copy()
 A_ref["TransactionDT"] = A_ref["_dt"]
 
+amount_all = A["TransactionAmt"].to_numpy()
+p_valid_all = {"p_baseline": lgb_valid_proba}
+for name, var in [("p_xgb", "xgb_valid"), ("p_cat", "cb_valid")]:
+    if var in globals():
+        p_valid_all[name] = globals()[var]
+if "xgb_valid" in globals() and "cb_valid" in globals():
+    p_valid_all["p_blend"] = (_rk(lgb2_valid) + _rk(xgb_valid) + _rk(cb_valid)) / 3
+
 meta_app = export_artifacts(
     EXPORT_DIR,
     booster=model2.booster_, A=A_ref, new_feats=new_feats, feature_names=list(X_train2.columns),
@@ -43,6 +51,24 @@ meta_app = export_artifacts(
     cost_fp=COST_FP, cost_fn=COST_FN, max_alert_rate=MAX_ALERT_RATE,
     tables=tables, time_inconsistent=globals().get("bad_feats", []),
     best_iteration=int(model2.best_iteration_),
+    amount_hold=amount_all[i_valid:n], amount_valid=amount_all[i_train:i_valid], p_valid_all=p_valid_all,
+)
+
+# ---- supervised-vs-unsupervised comparison, unsupervised models, EDA and SHAP sample
+pos_eval = X_hold.index.get_indexer(eval_idx)              # rows of the unsupervised evaluation sample, inside the holdout
+sup_on_eval = {k: np.asarray(v)[pos_eval] for k, v in p_hold.items()}
+eda = build_eda(train, client=A.iloc[:n][["uid_count", "uid_prior_count", "amt_to_uid_mean"]])
+export_extras(
+    EXPORT_DIR,
+    y_eval=y_eval, day_eval=(A["_dt"].iloc[i_valid:n].to_numpy()[pos_eval] // 86400),
+    sup_on_eval=sup_on_eval, all_scores=all_scores,
+    unsup_parts={"num_cols": feat.num_cols, "freq_cols": feat.freq_cols, "freq_maps": feat.freq_maps,
+                 "imputer": feat.imputer, "scaler": feat.scaler, "pca": pca},
+    unsup_models={"if_model": if_model, "svm_model": svm_model, "ae_model": ae_model},
+    unsup_tables={"unsup_results": unsup_results, "unsup_tests": globals().get("res")},
+    unsup_settings={"feature_mode": FEATURE_MODE, "num_cols": num_cols, "freq_cols": freq_cols,
+                    "fit_on_legit_only": FIT_ON_LEGIT_ONLY},
+    eda=eda, booster=model2.booster_, X_shap=X_hold2.sample(n=min(2000, len(X_hold2)), random_state=RANDOM_STATE),
 )
 zip_base = "/kaggle/working/app_artifacts" if ON_KAGGLE else "app_artifacts"
 shutil.make_archive(zip_base, "zip", EXPORT_DIR)
@@ -56,7 +82,7 @@ MD = """## 18. Export artifacts for the Streamlit app
 
 Writes the section-13 LightGBM (`model2`, trained on the training split only, so it matches the holdout numbers and the
 validation-chosen thresholds), the hashed client-feature reference tables, the holdout predictions of every model, the
-thresholds and the experiment tables into one folder, then zips it. Download `app_artifacts.zip` from the notebook output
+thresholds, validation predictions with transaction amounts, the fitted unsupervised detectors, the EDA summaries and a SHAP sample into one folder, then zips it. Download `app_artifacts.zip` from the notebook output
 and unzip it into the app's `artifacts/` folder.
 
 Run it after sections 13-17 (sections 14-17 are optional; whatever exists is exported)."""
@@ -69,8 +95,10 @@ def _body(path):
 
 def build_cell_source():
     return ("from pathlib import Path\n\n# ---- client-key helpers (identical to the app's core/keys.py) ----\n"
-            + _body(ROOT / "core" / "keys.py") + "\n\n# ---- exporter ----\n"
-            + _body(ROOT / "tools" / "export_artifacts.py") + CALL)
+            + _body(ROOT / "core" / "keys.py") + "\n\n# ---- EDA summaries (core/eda.py) ----\n"
+            + _body(ROOT / "core" / "eda.py") + "\n\n# ---- exporter ----\n"
+            + _body(ROOT / "tools" / "export_artifacts.py") + "\n\n# ---- extras ----\n"
+            + _body(ROOT / "tools" / "export_extras.py") + CALL)
 
 
 def main(src, dst):

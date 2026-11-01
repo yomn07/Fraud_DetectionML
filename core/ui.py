@@ -7,9 +7,9 @@ NEW_COLOR, OLD_COLOR, ALERT_COLOR = "#2563eb", "#94a3b8", "#ef4444"
 
 def style(fig, height=380, legend=True):
     fig.update_layout(
-        height=height, margin=dict(l=10, r=10, t=40, b=10), colorway=PALETTE,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0) if legend else None,
-        showlegend=legend, hovermode="closest",
+        height=height, margin=dict(l=10, r=10, t=70, b=10), colorway=PALETTE,
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1) if legend else None,
+        showlegend=legend, hovermode="closest", title=dict(x=0, xanchor="left", y=0.97, yanchor="top"),
     )
     fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)", zeroline=False)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)", zeroline=False)

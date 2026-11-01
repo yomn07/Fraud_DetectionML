@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -37,6 +38,33 @@ with right:
     fig.update_traces(textposition="inside", textinfo="percent")
     fig.update_layout(title="Gain by feature group")
     st.plotly_chart(style(fig, 420), width="stretch")
+
+st.subheader("Global explanation: SHAP beeswarm")
+sh = art.shap_sample
+if sh is None:
+    st.info("No SHAP sample was exported. Re-run the export cell (section 18) to add the beeswarm.")
+else:
+    feats = [c[5:] for c in sh.columns if c.startswith("shap:")]
+    nshow = st.slider("Features in the beeswarm", 5, len(feats), min(15, len(feats)), key="bee")
+    rng = np.random.RandomState(0)
+    fig = go.Figure()
+    for i, f in enumerate(feats[:nshow]):
+        x = sh[f"shap:{f}"].to_numpy()
+        pc = sh[f"pct:{f}"].to_numpy()
+        y = (nshow - 1 - i) + rng.uniform(-0.32, 0.32, len(x))
+        missing = pc < 0
+        fig.add_scatter(x=x[~missing], y=y[~missing], mode="markers", showlegend=False, hoverinfo="x",
+                        marker=dict(size=4, color=pc[~missing], colorscale="RdBu_r", cmin=0, cmax=1, opacity=0.7,
+                                    colorbar=dict(title="Feature value", tickvals=[0, 1], ticktext=["low", "high"], len=0.45, thickness=12) if i == 0 else None))
+        if missing.any():
+            fig.add_scatter(x=x[missing], y=y[missing], mode="markers", showlegend=False, hoverinfo="x",
+                            marker=dict(size=4, color="#9ca3af", opacity=0.6))
+    fig.add_vline(x=0, line_color="#999")
+    fig.update_layout(title="Each dot is one holdout transaction. Right = pushes toward fraud; grey = value missing",
+                      xaxis_title="SHAP value (log-odds)", yaxis=dict(tickmode="array", tickvals=list(range(nshow)), ticktext=feats[:nshow][::-1]))
+    st.plotly_chart(style(fig, 120 + 30 * nshow, legend=False), width="stretch")
+    st.caption(f"{len(sh):,} randomly sampled holdout transactions. Colour is the feature value's percentile within the sample "
+               "(raw values are not stored). Wide spread = the feature matters a lot for some transactions.")
 
 st.subheader("The client-ID features")
 desc = {

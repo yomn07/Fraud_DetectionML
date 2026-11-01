@@ -80,3 +80,65 @@ def test_threshold_helpers():
     t = best_threshold(y, p, 1, 300)
     c = confusion(y, p, t)
     assert c["TP"] + c["FN"] == 10 and c["alerts"] == c["TP"] + c["FP"]
+
+
+def test_chunked_scoring_matches_in_memory_scoring():
+    from core.batch import score_stream
+    from core.store import load_from_dir
+    art = load_from_dir(D)
+    raw = pd.read_csv(D / "sample_transactions.csv")
+    s_mem, _, _ = score_frame(art, raw, "reference")
+    res = score_stream(art, str(D / "sample_transactions.csv"), None, mode="reference", chunk_rows=97, keep_top=10)
+    assert len(res["scores"]) == len(raw)
+    # features are computed from whole-file statistics in both paths, so scores must agree to float precision
+    assert np.allclose(res["scores"], s_mem, atol=1e-9)
+    assert set(res["unsup"]) == {"Isolation Forest", "One-Class SVM (approx.)", "Autoencoder"}
+    assert len(res["top_X"]) <= 10 * (len(raw) // 97 + 1)
+
+
+def test_unsupervised_percentiles_and_reason_codes():
+    from core.scoring import reason_codes, waterfall_data
+    from core.store import load_from_dir
+    from core.unsup import score_unsup, to_percentile
+    art = load_from_dir(D)
+    raw = pd.read_csv(D / "sample_transactions.csv")
+    s, X, _ = score_frame(art, raw, "reference")
+    for name, v in score_unsup(art.unsup, X).items():
+        pct = to_percentile(art.unsup, name, v)
+        assert pct.min() >= 0 and pct.max() <= 100
+    table, base, logit = explain_row(art, X.iloc[[int(np.argmax(s))]])
+    codes = reason_codes(table)
+    assert 3 <= len(codes) <= 5 and all(c["effect"] > 0 for c in codes)
+    labels, values, measure = waterfall_data(table, base)
+    assert abs(values[-1] - logit) < 1e-9 and len(labels) == len(values) == len(measure)
+
+
+def test_amount_cost_threshold_beats_extremes():
+    from core.metrics import amount_cost, best_threshold_amount
+    from core.store import load_from_dir
+    art = load_from_dir(D)
+    v, t = art.valid, art.preds
+    thr = best_threshold_amount(v["y_true"].to_numpy(), v["p_v2"].to_numpy(), v["amount"].to_numpy(), 5.0)
+    c = amount_cost(v["y_true"].to_numpy(), v["p_v2"].to_numpy(), v["amount"].to_numpy(), thr, 5.0)["total"]
+    nothing = float(v["amount"][v["y_true"] == 1].sum())
+    everything = 5.0 * len(v)
+    assert c <= min(nothing, everything) + 1e-6
+    ct = amount_cost(t["y_true"].to_numpy(), t["p_v2"].to_numpy(), t["amount"].to_numpy(), thr, 5.0)["total"]
+    assert ct < float(t["amount"][t["y_true"] == 1].sum())      # transfers to the test period
+
+
+def test_api():
+    from fastapi.testclient import TestClient
+    import importlib
+    api = importlib.import_module("api")
+    c = TestClient(api.app)
+    assert c.get("/health").json()["status"] == "ok"
+    raw = pd.read_csv(D / "sample_transactions.csv").head(30)
+    body = {"transactions": json.loads(raw.to_json(orient="records")), "mode": "reference", "rule": "f2"}
+    r = c.post("/score", json=body)
+    assert r.status_code == 200, r.text
+    res = r.json()["results"]
+    assert len(res) == 30 and all(0 <= x["score"] <= 1 for x in res)
+    flagged = [x for x in res if x["flagged"]]
+    assert all(3 <= len(x["reason_codes"]) <= 5 for x in flagged)
+    assert c.post("/score", json={"transactions": [{"TransactionAmt": 1.0}]}).status_code == 422

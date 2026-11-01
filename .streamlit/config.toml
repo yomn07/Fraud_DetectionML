@@ -1,5 +1,5 @@
 [server]
-maxUploadSize = 400
+maxUploadSize = 1024
 enableXsrfProtection = true
 
 [browser]

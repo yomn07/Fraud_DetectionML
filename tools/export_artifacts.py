@@ -52,9 +52,12 @@ def _records(df):
 
 def export_artifacts(out_dir, *, booster, A, new_feats, feature_names, cat_cols, category_levels,
                      y_valid, p_valid, y_hold, p_hold, day_hold, cost_fp=1, cost_fn=300, max_alert_rate=0.05,
-                     tables=None, time_inconsistent=None, is_demo=False, split_note="", best_iteration=None):
+                     tables=None, time_inconsistent=None, is_demo=False, split_note="", best_iteration=None,
+                     amount_hold=None, amount_valid=None, p_valid_all=None):
     """A: DataFrame over ALL reference rows (train+valid+holdout+test) with columns
     card1, card2, card3, card5, addr1, D1, TransactionAmt, P_emaildomain and TransactionDT.
+    amount_hold / amount_valid: TransactionAmt of those rows (needed for the amount-based cost).
+    p_valid_all: optional dict name -> validation probabilities of the other models (same keys as p_hold).
     p_hold: dict name -> holdout probabilities; must contain 'p_v2' (the model in `booster`, trained on train only).
     p_valid: validation probabilities of that same model (used to choose thresholds)."""
     os.makedirs(out_dir, exist_ok=True)
@@ -81,9 +84,21 @@ def export_artifacts(out_dir, *, booster, A, new_feats, feature_names, cat_cols,
 
     # 3) holdout predictions
     preds = pd.DataFrame({"y_true": np.asarray(y_hold).astype("int8"), "day": np.asarray(day_hold).astype("int32")})
+    if amount_hold is not None:
+        preds["amount"] = np.asarray(amount_hold, dtype="float32")
     for name, p in p_hold.items():
         preds[name] = np.asarray(p, dtype="float32")
     preds.to_csv(os.path.join(out_dir, "holdout_predictions.csv.gz"), index=False, compression="gzip")
+
+    # validation predictions: the app chooses thresholds here and confirms them on the holdout
+    vpred = pd.DataFrame({"y_true": np.asarray(y_valid).astype("int8")})
+    if amount_valid is not None:
+        vpred["amount"] = np.asarray(amount_valid, dtype="float32")
+    vpred["p_v2"] = np.asarray(p_valid, dtype="float32")
+    for name, p in (p_valid_all or {}).items():
+        if name != "p_v2":
+            vpred[name] = np.asarray(p, dtype="float32")
+    vpred.to_csv(os.path.join(out_dir, "valid_predictions.csv.gz"), index=False, compression="gzip")
 
     # 4) thresholds chosen on VALID (same logic as notebook sections 5 and 5b)
     yv = np.asarray(y_valid).astype(int)
