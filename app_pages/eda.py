@@ -56,16 +56,17 @@ def read_csv_file(file):
         file,
         sep=None,
         engine="python",
-        encoding="utf-8-sig",
-        low_memory=False
+        encoding="utf-8-sig"
     )
 
+    # Clean column names
     df.columns = (
         df.columns.astype(str)
         .str.replace("\ufeff", "", regex=False)
         .str.strip()
     )
 
+    # Normalize TransactionID
     for col in df.columns:
         if col.lower().replace("_", "").replace(" ", "") == "transactionid":
             df = df.rename(columns={col: "TransactionID"})
