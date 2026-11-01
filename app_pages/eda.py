@@ -285,7 +285,6 @@ def load_local_dataset(dataset_type):
             f"Invalid identity file: {identity_path}"
         )
 
-    transaction_df = read_csv_file(transaction_path)
     identity_df = read_csv_file(identity_path)
 
     if "TransactionID" not in transaction_df.columns:
