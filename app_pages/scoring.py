@@ -18,7 +18,7 @@ from core.ui import ALERT_COLOR, NEW_COLOR, PALETTE, pct, style
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
-MAX_ROWS = 300_000
+MAX_ROWS = 300
 
 art = require_artifacts()
 meta = art.meta
