@@ -27,7 +27,7 @@ st.caption(
     "including fraud patterns, missing values and transaction behavior."
 )
 
-MAX_ROWS = 300_000
+MAX_ROWS = 300
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_DIR / "data"
