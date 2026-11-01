@@ -1,6 +1,6 @@
 {
  "is_demo": true,
- "created": "2026-11-01T07:25:36+00:00",
+ "created": "2026-11-01T13:07:50+00:00",
  "feature_names": [
   "TransactionAmt",
   "ProductCD",
@@ -325,5 +325,63 @@
    "gain": 0.0,
    "share": 0.0
   }
- ]
+ ],
+ "comparison": {
+  "n_sample": 4000,
+  "fraud_rate": 0.0365,
+  "supervised": [
+   "p_baseline",
+   "p_v2"
+  ],
+  "unsupervised": [
+   "Isolation Forest",
+   "One-Class SVM (approx.)",
+   "Autoencoder"
+  ]
+ },
+ "unsup_tables": {
+  "unsup_results": [
+   {
+    "Model": "Isolation Forest",
+    "ROC-AUC": 0.731562,
+    "Average Precision": 0.184879
+   },
+   {
+    "Model": "One-Class SVM (approx.)",
+    "ROC-AUC": 0.688216,
+    "Average Precision": 0.077737
+   },
+   {
+    "Model": "Autoencoder",
+    "ROC-AUC": 0.607741,
+    "Average Precision": 0.052715
+   }
+  ]
+ },
+ "unsup_settings": {
+  "feature_mode": "fixed",
+  "num_cols": [
+   "C1",
+   "C2",
+   "C3",
+   "D1",
+   "D2",
+   "TransactionAmt",
+   "TransactionHour"
+  ],
+  "freq_cols": [
+   "card1",
+   "card2",
+   "card5",
+   "addr1",
+   "P_emaildomain",
+   "card6"
+  ],
+  "fit_on_legit_only": false
+ },
+ "versions": {
+  "sklearn": "1.9.1",
+  "python": "3.13.18",
+  "lightgbm": "4.7.0"
+ }
 }
