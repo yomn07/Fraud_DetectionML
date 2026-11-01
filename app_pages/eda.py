@@ -211,13 +211,16 @@ def normalize_identity_columns(df):
     return df
 
 
-def read_csv_file(file):
-    """Read a CSV file and normalize its column names."""
+
+
+def read_csv_file(file, nrows=None):
+    """Read a limited number of CSV rows when requested."""
 
     df = pd.read_csv(
         file,
         low_memory=False,
         encoding="utf-8-sig",
+        nrows=nrows,
     )
 
     df.columns = (
@@ -232,6 +235,8 @@ def read_csv_file(file):
             break
 
     return df
+
+
 
 
 def merge_transaction_identity(transaction_df, identity_df):
@@ -274,8 +279,9 @@ def merge_transaction_identity(transaction_df, identity_df):
     )
 
 
+
 def load_local_dataset(dataset_type):
-    """Load and merge a local or Kaggle-downloaded dataset."""
+    """Load a small transaction sample and its matching identity data."""
 
     ensure_kaggle_dataset(dataset_type)
 
@@ -292,22 +298,28 @@ def load_local_dataset(dataset_type):
             f"Invalid identity file: {identity_path}"
         )
 
-    # Read BOTH CSV files.
-    transaction_df = read_csv_file(transaction_path)
-    identity_df = read_csv_file(identity_path)
+    # Read ONLY the first MAX_ROWS transactions.
+    transaction_df = read_csv_file(
+        transaction_path,
+        nrows=MAX_ROWS,
+    )
 
     if "TransactionID" not in transaction_df.columns:
-        raise ValueError(
-            "TransactionID missing from transaction data. "
-            f"Columns found: {transaction_df.columns.tolist()[:20]}"
-        )
+        raise ValueError("TransactionID missing from transaction data.")
+
+    # Read identity data and keep only matching transactions.
+    identity_df = read_csv_file(identity_path)
 
     if "TransactionID" not in identity_df.columns:
-        raise ValueError(
-            "TransactionID missing from identity data. "
-            f"Columns found: {identity_df.columns.tolist()[:20]}"
-        )
+        raise ValueError("TransactionID missing from identity data.")
 
+    identity_df = identity_df[
+        identity_df["TransactionID"].isin(
+            transaction_df["TransactionID"]
+        )
+    ].copy()
+
+    # Merge only the selected transactions.
     return merge_transaction_identity(
         transaction_df,
         identity_df,
@@ -787,7 +799,7 @@ if len(df) == 0:
     st.stop()
 
 if len(df) > MAX_ROWS:
-
+    df = df.iloc[:MAX_ROWS].copy()
     st.warning(
         f"The dataset contains {len(df):,} rows. "
         f"For interactive analysis, the first {MAX_ROWS:,} rows "
