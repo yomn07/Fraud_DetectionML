@@ -103,13 +103,6 @@ def ensure_kaggle_dataset(dataset_type):
     env = os.environ.copy()
     env["KAGGLE_API_TOKEN"] = str(api_token)
 
-    env = os.environ.copy()
-    env["KAGGLE_API_TOKEN"] = str(api_token)
-
-    env = os.environ.copy()
-    env["KAGGLE_USERNAME"] = str(username)
-    env["KAGGLE_KEY"] = str(key)
-
     for filename in missing_files:
 
         st.info(f"Downloading {filename} from Kaggle...")
