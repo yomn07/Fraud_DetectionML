@@ -136,7 +136,7 @@ with tab_exp:
     ut = art.meta.get("unsup_tables") or {}
     if not any(ut.values()):
         st.info("No unsupervised experiment tables were exported.")
-    names = {"unsup_results": "Detectors (final settings)", "unsup_tests": "Extra tests: LOF without PCA, longer autoencoder, ensembles"}
+    names = {"unsup_results": "Detectors (final settings)", "unsup_tests": "Extra tests: LOF , longer autoencoder, ensembles"}
     for k, v in ut.items():
         if v:
             st.markdown(f"**{names.get(k, k)}**")
