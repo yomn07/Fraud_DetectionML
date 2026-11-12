@@ -16,10 +16,14 @@ if comp is None:
     st.info("This comparison needs `comparison_sample.csv.gz` from the notebook export (section 18).")
     st.stop()
 
+# LOF is shown in its version without PCA: drop the PCA-based LOF and give the other one the plain name.
+if "u:LOF (no PCA)" in comp.columns:
+    comp = comp.drop(columns=["u:LOF"], errors="ignore").rename(columns={"u:LOF (no PCA)": "u:LOF"})
+
 y = comp["y_true"].to_numpy()
 fraud_rate = float(y.mean())
 sup_cols = [c for c in MODEL_LABELS if c in comp.columns]
-uns_cols = [c for c in comp.columns if c.startswith("u:")]
+uns_cols = [c for c in comp.columns if c.startswith("u:") and "pca" not in c.lower()]  # PCA variants are not shown
 labels = {**{c: MODEL_LABELS[c] for c in sup_cols}, **{c: c[2:] for c in uns_cols}}
 family = {**{c: "Supervised" for c in sup_cols}, **{c: "Unsupervised" for c in uns_cols}}
 
@@ -133,19 +137,36 @@ with tab_agree:
                    "horizontal axis is the case for keeping an unsupervised detector as a second opinion.")
 
 with tab_exp:
-    ut = art.meta.get("unsup_tables") or {}
+    def _no_pca(rows):
+        return [r for r in rows if not any("pca" in str(v).lower() for v in r.values())]
+
+    ut = {k: _no_pca(v) for k, v in (art.meta.get("unsup_tables") or {}).items() if v}
     if not any(ut.values()):
-        st.info("No unsupervised experiment tables were exported.")
-    names = {"unsup_results": "Detectors (final settings)", "unsup_tests": "Extra tests: LOF , longer autoencoder, ensembles"}
+        # Older exports have no tables in meta.json: rebuild them from the scores in comparison_sample.csv.gz.
+        final = {"Isolation Forest", "LOF", "One-Class SVM (approx.)", "Autoencoder", "Rank-average ensemble"}
+        cols = ["Model", "AUC", "AP", "Recall @1%", "Recall @5%"]
+        uns = tbl[tbl["Family"] == "Unsupervised"]
+        ut = {"unsup_results": uns[uns["Model"].isin(final)][cols].to_dict("records"),
+              "unsup_tests": uns[~uns["Model"].isin(final)][cols].to_dict("records")}
+    if not any(ut.values()):
+        st.info("No unsupervised experiment results are available.")
+    names = {"unsup_results": "Detectors (final settings)", "unsup_tests": "Extra tests: longer autoencoder, ensembles"}
     for k, v in ut.items():
         if v:
             st.markdown(f"**{names.get(k, k)}**")
             st.dataframe(pd.DataFrame(v), hide_index=True, width="stretch")
-    s = art.meta.get("unsup_settings") or {}
+    s = dict(art.meta.get("unsup_settings") or {})
+    parts = (art.unsup or {}).get("parts") or {}
+    if not s and parts:  # fall back to the columns stored with the unsupervised models
+        s = {"num_cols": list(parts.get("num_cols", [])), "freq_cols": list(parts.get("freq_cols", []))}
     if s:
-        st.markdown(f"Unsupervised settings: feature mode **{s.get('feature_mode')}**, "
-                    f"{len(s.get('num_cols', []))} numeric and {len(s.get('freq_cols', []))} frequency-encoded columns, "
-                    f"fit on {'legitimate rows only' if s.get('fit_on_legit_only') else 'all training rows (labels not used)'}.")
+        text = (f"Unsupervised settings: {len(s.get('num_cols', []))} numeric and "
+                f"{len(s.get('freq_cols', []))} frequency-encoded columns")
+        if s.get("feature_mode"):
+            text += f", feature mode **{s['feature_mode']}**"
+        if "fit_on_legit_only" in s:
+            text += f", fit on {'legitimate rows only' if s['fit_on_legit_only'] else 'all training rows (labels not used)'}"
+        st.markdown(text + ".")
         with st.expander("Columns used"):
             st.write("Numeric: " + ", ".join(f"`{c}`" for c in s.get("num_cols", [])))
             st.write("Frequency-encoded: " + ", ".join(f"`{c}`" for c in s.get("freq_cols", [])))
