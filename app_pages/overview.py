@@ -60,11 +60,11 @@ with right:
     st.plotly_chart(style(fig, height=300, legend=False), width="stretch")
 
 st.subheader("What was tried")
-exp = meta.get("experiments") or {}
+exp = {k: v for k, v in (meta.get("experiments") or {}).items() if k != "client_avg"}  # per-client averaging not shown
 if exp and any(v for v in exp.values()):
-    labels = {"smote": "SMOTE-NC oversampling", "client_avg": "Per-client score averaging",
+    labels = {"smote": "SMOTE-NC oversampling",
               "time_consistency": "Dropping time-inconsistent features", "ensemble": "Three-model ensemble"}
-    verdict = {"smote": "", "client_avg": "", "time_consistency": "", "ensemble": ""}
+    verdict = {"smote": "", "time_consistency": "", "ensemble": ""}
     for k, v in exp.items():
         if v:
             with st.expander(labels.get(k, k), expanded=False):
