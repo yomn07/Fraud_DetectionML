@@ -52,6 +52,36 @@ def _opt_csv(path, name):
     return pd.read_csv(f) if f.exists() else None
 
 
+def _upgrade_sklearn_objects(obj, _seen=None):
+    """Make models pickled with an older scikit-learn usable with a newer one.
+
+    scikit-learn >= 1.7 renamed SimpleImputer's private `_fit_dtype` to `_fill_dtype`, so an imputer saved with 1.6
+    fails at transform time with AttributeError. Copy the old attribute across (same meaning: the dtype seen in fit).
+    """
+    _seen = set() if _seen is None else _seen
+    if id(obj) in _seen:
+        return
+    _seen.add(id(obj))
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _upgrade_sklearn_objects(v, _seen)
+        return
+    if isinstance(obj, (list, tuple)):
+        for v in obj:
+            _upgrade_sklearn_objects(v, _seen)
+        return
+    if type(obj).__name__ == "SimpleImputer" and not hasattr(obj, "_fill_dtype"):
+        dtype = getattr(obj, "_fit_dtype", None)
+        if dtype is None and hasattr(obj, "statistics_"):
+            dtype = obj.statistics_.dtype
+        if dtype is not None:
+            obj._fill_dtype = dtype
+    for step in getattr(obj, "steps", None) or []:          # Pipeline
+        _upgrade_sklearn_objects(step[1], _seen)
+    for est in getattr(obj, "transformers_", None) or []:   # ColumnTransformer
+        _upgrade_sklearn_objects(est[1], _seen)
+
+
 def load_from_dir(path):
     path = Path(path)
     meta = json.loads((path / "meta.json").read_text())
@@ -66,12 +96,8 @@ def load_from_dir(path):
     if (path / "unsup_models.joblib").exists():
         try:
             import joblib
-            import sklearn
             unsup = joblib.load(path / "unsup_models.joblib")
-            saved = unsup.get("sklearn_version")
-            if saved and saved.split(".")[:2] != sklearn.__version__.split(".")[:2]:
-                unsup_error = (f"Unsupervised models were saved with scikit-learn {saved} but this runs {sklearn.__version__}. "
-                               f"Pin scikit-learn=={saved} in requirements.txt if scoring with them fails.")
+            _upgrade_sklearn_objects(unsup)   # models saved with scikit-learn 1.6 now run on newer versions
         except Exception as e:     # incompatible pickle: keep the rest working
             unsup, unsup_error = None, f"Unsupervised models could not be loaded: {e}"
     eda = None
